@@ -1,0 +1,15 @@
+{
+  "name": "elevator-simulator",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "test": "node --test src/simulator.test.mjs"
+  },
+  "dependencies": { "react": "19.2.8", "react-dom": "19.2.8" },
+  "devDependencies": { "vite": "8.2.2", "@vitejs/plugin-react": "6.1.1" },
+  "engines": { "node": "^20.19.0 || >=22.12.0" }
+}

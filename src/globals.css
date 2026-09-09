@@ -1,0 +1,55 @@
+:root {
+  --ink: #123b31;
+  --green: #164f40;
+  --gold: #c79a42;
+  --paper: #f6efdf;
+  --cream: #fffaf0;
+  --line: #d8cbae;
+}
+* {
+  box-sizing: border-box;
+}
+html {
+  scroll-behavior: smooth;
+}
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: var(--font-geist-sans), Arial, sans-serif;
+}
+button,
+select {
+  font: inherit;
+  color: inherit;
+}
+button,
+a {
+  transition: 0.2s;
+}
+
+.projects-footer {
+  box-sizing: border-box;
+  width: min(680px, 100%);
+  margin: 3rem auto 0;
+  padding: 0.875rem 1.125rem;
+  border: 1px solid var(--line);
+  border-radius: 0.75rem;
+  background: var(--cream);
+}
+.projects-footer a {
+  font-family: sans-serif;
+  color: #a28248;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-weight: 600;
+  text-decoration: none;
+}
+.projects-footer a:hover,
+.projects-footer a:focus-visible {
+  color: var(--green);
+  text-decoration: underline;
+  text-decoration-color: var(--line);
+  text-underline-offset: 4px;
+}
