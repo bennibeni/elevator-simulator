@@ -11,6 +11,8 @@ export function CabinPanel({
   onSelectFloor,
   passengersInside = [],
   isDeadlocked = false,
+  isBroadcastingEmergency = false,
+  needsOperatorIntervention = false,
 }) {
   const totalFloors = requests.length;
   const buttonFloors = Array.from(
@@ -113,55 +115,61 @@ export function CabinPanel({
                 Cabina vuota
               </span>
             ) : (
-              passengersInside.map((p) => (
-                <span
-                  key={p.id}
-                  style={{
-                    position: "relative",
-                    display: "inline-block",
-                    width: "12px",
-                    height: "12px",
-                  }}
-                >
+              passengersInside.map((p) => {
+                const stranded = p.isStranded;
+                const exasperated = p.isExasperated;
+                return (
                   <span
-                    className="passenger-dot"
-                    title={
-                      p.isStranded
-                        ? `Diretto al piano ${p.to}, bloccato: il piano è fuori servizio`
-                        : `Diretto al piano ${p.to}`
-                    }
+                    key={p.id}
                     style={{
-                      display: "block",
+                      position: "relative",
+                      display: "inline-block",
                       width: "12px",
                       height: "12px",
-                      borderRadius: "50%",
-                      backgroundColor: p.color,
                     }}
-                  />
-                  {p.isStranded && (
+                  >
                     <span
-                      aria-hidden="true"
+                      className="passenger-dot"
+                      title={
+                        exasperated
+                          ? `Diretto al piano ${p.to}, esasperato: bloccato da troppo tempo`
+                          : stranded
+                            ? `Diretto al piano ${p.to}, bloccato: il piano è fuori servizio`
+                            : `Diretto al piano ${p.to}`
+                      }
                       style={{
-                        position: "absolute",
-                        top: "-6px",
-                        right: "-6px",
-                        width: "11px",
-                        height: "11px",
+                        display: "block",
+                        width: "12px",
+                        height: "12px",
                         borderRadius: "50%",
-                        background: "#ffffff",
-                        border: "1px solid #dc2626",
-                        color: "#dc2626",
-                        fontSize: "8px",
-                        fontWeight: "bold",
-                        lineHeight: "9px",
-                        textAlign: "center",
+                        backgroundColor: p.color,
                       }}
-                    >
-                      ?
-                    </span>
-                  )}
-                </span>
-              ))
+                    />
+                    {stranded && (
+                      <span
+                        aria-hidden="true"
+                        style={{
+                          position: "absolute",
+                          top: "-6px",
+                          right: "-6px",
+                          width: "11px",
+                          height: "11px",
+                          borderRadius: "50%",
+                          background: exasperated ? "#dc2626" : "#ffffff",
+                          border: "1px solid #dc2626",
+                          color: exasperated ? "#ffffff" : "#dc2626",
+                          fontSize: "8px",
+                          fontWeight: "bold",
+                          lineHeight: "9px",
+                          textAlign: "center",
+                        }}
+                      >
+                        {exasperated ? "!" : "?"}
+                      </span>
+                    )}
+                  </span>
+                );
+              })
             )}
             {passengersInside.length >= 3 && !isDeadlocked && (
               <span
@@ -179,7 +187,7 @@ export function CabinPanel({
               </span>
             )}
           </div>
-          {isDeadlocked && (
+          {isDeadlocked && !needsOperatorIntervention && (
             <div
               role="alert"
               style={{
@@ -194,7 +202,29 @@ export function CabinPanel({
               }}
             >
               🔒 Cabina bloccata: piena, e tutte le destinazioni a bordo sono
-              ora fuori servizio. Riattiva uno dei piani segnati per sbloccarla.
+              ora fuori servizio. Riattiva uno dei piani segnati per
+              sbloccarla subito — oppure aspetta: appena qualcuno a bordo si
+              esaspera, proverà tutti i piani della pulsantiera da solo.
+            </div>
+          )}
+          {needsOperatorIntervention && (
+            <div
+              role="alert"
+              style={{
+                marginTop: "10px",
+                fontSize: "0.8rem",
+                background: "#450a0a",
+                color: "#fecaca",
+                border: "2px solid #dc2626",
+                borderRadius: "4px",
+                padding: "8px 10px",
+                fontWeight: "bold",
+              }}
+            >
+              🛑 Serve un operatore: la pulsantiera è stata provata su ogni
+              piano senza successo — sono tutti fuori servizio per questo
+              ascensore. Nessuna azione automatica può più sbloccarla.
+              Riattiva almeno un piano.
             </div>
           )}
         </div>
@@ -242,6 +272,7 @@ export function CabinPanel({
                 const isCurrentFloor = f === floor;
                 const isRequested = requests[f];
                 const isOutOfService = outOfServiceByFloor[f];
+                const isFlashing = isBroadcastingEmergency && isRequested && !isOutOfService;
 
                 // Disabilitato se siamo già al piano a porte aperte (lasciando
                 // liberi i passeggeri di inviare i click), oppure se il piano
@@ -252,6 +283,7 @@ export function CabinPanel({
                   <button
                     key={f}
                     type="button"
+                    className={isFlashing ? "emergency-flashing" : undefined}
                     aria-pressed={isRequested}
                     aria-label={
                       isOutOfService ? `Piano ${f} fuori servizio` : `Vai al piano ${f}`

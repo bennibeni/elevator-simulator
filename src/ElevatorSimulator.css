@@ -1,4 +1,28 @@
 /* ElevatorSimulator.css */
+
+/* Lampeggio della pulsantiera durante la pressione compulsiva di
+   emergenza (cabina in deadlock totale, qualcuno esasperato che sta
+   "provando tutti i piani" — vedi Elevator.isBroadcastingEmergency). */
+@keyframes emergency-flash {
+  0%, 100% {
+    opacity: 1;
+    filter: brightness(1);
+  }
+  50% {
+    opacity: 0.35;
+    filter: brightness(1.9);
+  }
+}
+.emergency-flashing {
+  animation: emergency-flash 0.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .emergency-flashing {
+    animation: none;
+    opacity: 0.7;
+  }
+}
+
 .building-container {
   padding: 20px;
   font-family: sans-serif;
@@ -125,6 +149,16 @@
   transform: none !important;
   transition: none !important;
   box-sizing: border-box !important;
+}
+/* Il pallino che sta dissolvendo (Sbarco) non porta né ombra né bordo
+   scuro: entrambi, essendo più scuri/a basso contrasto rispetto al
+   riempimento colorato, restano percepibili una frazione di secondo in più
+   anche se svaniscono alla stessa velocità — un residuo visivo che non
+   serve a nulla per un indicatore transitorio. Due classi battono una
+   anche con !important su entrambe: la specificità decide. */
+.passenger-dot.passenger-fading-dot {
+  box-shadow: none !important;
+  border: none !important;
 }
 
 .waiting-area,

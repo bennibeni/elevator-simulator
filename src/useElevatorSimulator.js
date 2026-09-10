@@ -1,6 +1,6 @@
 // useElevatorSimulator.js
 import { useCallback, useEffect, useReducer } from "react";
-import { DOOR_DELAYS } from "./cabin.mjs";
+import { DOOR_DELAYS } from "./Cabin.mjs";
 import { createSimulator, simulatorReducer } from "./simulator.mjs";
 
 export function useElevatorSimulator(floors) {
@@ -10,8 +10,8 @@ export function useElevatorSimulator(floors) {
     createSimulator,
   );
   const elevator = state.building.elevators[0];
-  const { moving, cabin: { doors } } = state;
-  const { floor, direction } = elevator;
+  const { moving, cabin, floor, direction } = elevator;
+  const { doors } = cabin;
 
   // VELOCIZZATO: Il timer del movimento passa da 750ms a 400ms per piano
   useEffect(() => {
@@ -20,7 +20,7 @@ export function useElevatorSimulator(floors) {
     return () => clearTimeout(timer);
   }, [moving, floor, direction]);
 
-  // Gestione porte (Invariata, mantiene i tempi equamente suddivisi di cabin.mjs)
+  // Gestione porte (Invariata, mantiene i tempi equamente suddivisi di Cabin.mjs)
   useEffect(() => {
     if (doors === "CLOSED") return;
     const timer = setTimeout(
@@ -46,11 +46,12 @@ export function useElevatorSimulator(floors) {
 
   return {
     elevator,
-    cabin: state.cabin,
-    moving: state.moving,
+    cabin,
+    moving,
     passengersWaiting: state.building.waiting,
     passengersInside: elevator.passengers,
     completedJourneys: state.completedJourneys || [],
+    abandonedJourneys: state.abandonedJourneys || [],
     totalElevatorDistance: state.totalElevatorDistance || 0,
     outOfServiceByFloor,
     requestFloor,

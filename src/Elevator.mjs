@@ -1,15 +1,16 @@
 // Elevator.mjs
 //
 // Un ascensore possiede il proprio piano, direzione, richieste (destinazioni
-// sempre onorate + chiamate soggette a capienza), i passeggeri realmente a
-// bordo, e ora anche i piani che NON serve. Il fuori servizio è qui, non su
-// Building: due ascensori sullo stesso edificio possono servire piani
-// diversi (espresso, banchi separati, manutenzione su uno solo) — non è una
-// proprietà del piano, è una relazione ascensore-piano. Tenere queste cose
-// insieme, dietro metodi, è il punto: "posso aprire qui?" e "in che
-// direzione vado?" diventano domande che l'ascensore sa rispondere da solo,
-// invece di logica sparsa in un reducer esterno che deve ricordarsi ogni
-// volta la stessa regola (è lì che sono nati due bug in precedenza).
+// sempre onorate + chiamate soggette a capienza), i piani che NON serve, e
+// una Cabin — a cui delega tutto ciò che riguarda l'abitacolo fisico
+// (porte, capienza, chi c'è a bordo). L'ascensore non sa più nulla di
+// passeggeri in quanto tali: sa solo dove si trova, dove deve andare, e se
+// può aprire le porte. Il fuori servizio è qui, non su Building: due
+// ascensori sullo stesso edificio possono servire piani diversi (espresso,
+// banchi separati, manutenzione su uno solo) — non è una proprietà del
+// piano, è una relazione ascensore-piano.
+
+import { Cabin } from "./Cabin.mjs";
 
 export class Elevator {
   #id;
@@ -18,8 +19,9 @@ export class Elevator {
   #destinations; // Set<number> — qualcuno a bordo scende qui, sempre onorato
   #calls; // Set<number> — qualcuno al piano vuole salire, soggetto a capienza
   #outOfServiceFloors; // Set<number> — piani che QUESTO ascensore non serve
-  #passengers;
-  #capacity;
+  #cabin;
+  #moving;
+  #emergencyCursor; // null = nessuna sequenza in corso; altrimenti prossimo piano da "premere"
 
   constructor({
     id,
@@ -28,8 +30,9 @@ export class Elevator {
     destinations,
     calls,
     outOfServiceFloors,
-    passengers,
-    capacity,
+    cabin,
+    moving,
+    emergencyCursor = null,
   }) {
     this.#id = id;
     this.#floor = floor;
@@ -37,8 +40,9 @@ export class Elevator {
     this.#destinations = destinations;
     this.#calls = calls;
     this.#outOfServiceFloors = outOfServiceFloors;
-    this.#passengers = passengers;
-    this.#capacity = capacity;
+    this.#cabin = cabin;
+    this.#moving = moving;
+    this.#emergencyCursor = emergencyCursor;
     Object.freeze(this);
   }
 
@@ -50,8 +54,9 @@ export class Elevator {
       destinations: new Set(),
       calls: new Set(),
       outOfServiceFloors: new Set(),
-      passengers: [],
-      capacity,
+      cabin: Cabin.create(capacity),
+      moving: false,
+      emergencyCursor: null,
     });
   }
 
@@ -64,11 +69,24 @@ export class Elevator {
   get direction() {
     return this.#direction;
   }
+  get cabin() {
+    return this.#cabin;
+  }
+  get moving() {
+    return this.#moving;
+  }
   get passengers() {
-    return this.#passengers;
+    return this.#cabin.passengers;
   }
   get isFull() {
-    return this.#passengers.length >= this.#capacity;
+    return this.#cabin.isFull;
+  }
+  // Vero mentre è in corso la sequenza di pressione di emergenza (vedi
+  // withEmergencyRequestsIfDeadlocked). Serve alla UI per il lampeggio
+  // prolungato della pulsantiera — puramente visivo, non influenza nulla
+  // della logica.
+  get isBroadcastingEmergency() {
+    return this.#emergencyCursor !== null;
   }
 
   // Vero quando la cabina è bloccata in modo strutturale: piena, e OGNI
@@ -79,38 +97,57 @@ export class Elevator {
   // normale (cabina piena ma con destinazioni valide, che si risolve da sola
   // strada facendo).
   isDeadlocked() {
-    if (this.#passengers.length === 0 || !this.isFull) return false;
-    return this.#passengers.every((p) => this.isFloorOutOfService(p.to));
+    if (this.#cabin.passengers.length === 0 || !this.#cabin.isFull) return false;
+    return this.#cabin.passengers.every((p) => this.isFloorOutOfService(p.to));
   }
 
-  // Segna come "bloccato" ogni passeggero a bordo la cui destinazione è
-  // fuori servizio, MA solo nel momento in cui l'ascensore lo dimostra
-  // davvero con uno dei due comportamenti osservabili:
-  //   - è fermo (direction null) e non è ancora arrivato lì, oppure
-  //   - è arrivato esattamente lì ma non può aprire (il caso "gli passa
-  //     accanto senza fermarsi" è lo stesso istante, a grana di un piano).
-  // Non è una deduzione istantanea al momento del toggle — il passeggero
-  // "se ne accorge" solo quando l'ascensore si comporta in un modo che lo
-  // dimostra. Idempotente: chi è già segnato resta invariato.
-  withStrandedMarked(now = Date.now()) {
-    const passengers = this.#passengers.map((p) => {
-      if (p.isStranded || !this.isFloorOutOfService(p.to)) return p;
-      const idleWithoutArriving = this.#direction === null && p.to !== this.#floor;
-      const arrivedButClosed = p.to === this.#floor;
-      return idleWithoutArriving || arrivedButClosed ? p.stranded(now) : p;
-    });
-    return this.#with({ passengers });
+  // Un deadlock vero (isDeadlocked) non si scioglie mai da solo: nessuna
+  // porta si riaprirà mai, perché nessuna richiesta esistente è azionabile.
+  // Se almeno un passeggero a bordo è già esasperato, prende l'unica azione
+  // che gli resta senza un pulsante d'emergenza dedicato: preme la
+  // pulsantiera, UN PIANO ALLA VOLTA (più realistico di premerli tutti in
+  // un colpo solo — e dà tempo alla UI di mostrare il lampeggio via via che
+  // ogni piano si accende). Ogni chiamata a questo metodo avanza di un
+  // piano; i piani già fuori servizio restano no-op (li rifiuta comunque
+  // `requestDestination`) ma consumano comunque il turno, come se il dito
+  // scorresse su tutta la fila. Non serve sapere DOVE si fermerà per primo:
+  // una volta aperte le porte, in un punto qualsiasi, chiunque sia
+  // esasperato scende comunque (vedi Cabin.alight) — l'azione crea solo
+  // l'occasione, non decide l'esito. Qualunque passeggero esasperato può
+  // farlo, e nessun altro a bordo (in qualunque stato si trovi) ha motivo
+  // di opporsi: non gli toglie nulla, aggiunge solo fermate.
+  withEmergencyRequestsIfDeadlocked(floorCount) {
+    const shouldBroadcast =
+      this.isDeadlocked() && this.#cabin.passengers.some((p) => p.isExasperated);
+
+    if (!shouldBroadcast) {
+      // situazione risolta (o mai iniziata): nessuna sequenza da proseguire
+      return this.#emergencyCursor === null ? this : this.#with({ emergencyCursor: null });
+    }
+
+    // Il cursore NON si ferma mai da solo: se un giro completo non trova
+    // nulla, riparte da capo (modulo). Altrimenti, se un operatore
+    // riattivasse un piano dopo che la sequenza ha già "rinunciato", quel
+    // piano non verrebbe mai più riprovato. I piani già fuori servizio
+    // restano no-op (li rifiuta comunque `requestDestination`), quindi
+    // ripeterli non costa nulla.
+    const cursor = this.#emergencyCursor ?? 0;
+    const floorToPress = cursor % floorCount;
+    return this.requestDestination(floorToPress).#with({ emergencyCursor: cursor + 1 });
   }
 
-  // Il piano è tornato in servizio: chi era bloccato per QUELLA
-  // destinazione smette di esserlo — l'ascensore tornerà a portarcelo
-  // normalmente. Altri passeggeri eventualmente bloccati per altri piani
-  // restano tali.
-  withStrandedCleared(floor) {
-    const passengers = this.#passengers.map((p) =>
-      p.to === floor && p.isStranded ? p.rescued() : p,
-    );
-    return this.#with({ passengers });
+  // Vero solo quando è DAVVERO impossibile fare qualunque cosa: cabina in
+  // deadlock e OGNI piano fuori servizio per questo ascensore, non solo
+  // quelli che capitano a essere le destinazioni a bordo. È un controllo
+  // diretto (non legato al progresso della sequenza sopra), così riflette
+  // subito la realtà se un operatore riattiva un piano — non deve aspettare
+  // che la sequenza ci "ripassi" per accorgersene.
+  needsOperatorIntervention(floorCount) {
+    if (!this.isDeadlocked()) return false;
+    for (let floor = 0; floor < floorCount; floor++) {
+      if (!this.isFloorOutOfService(floor)) return false;
+    }
+    return true;
   }
 
   isFloorOutOfService(floor) {
@@ -119,7 +156,7 @@ export class Elevator {
 
   hasDestinationAt(floor) {
     return (
-      this.#destinations.has(floor) || this.#passengers.some((p) => p.to === floor)
+      this.#destinations.has(floor) || this.#cabin.passengers.some((p) => p.to === floor)
     );
   }
 
@@ -132,7 +169,7 @@ export class Elevator {
   // è come se l'ascensore non passasse fisicamente di lì.
   canOpenDoorsAt(floor = this.#floor) {
     if (this.isFloorOutOfService(floor)) return false;
-    const canBoard = this.#calls.has(floor) && !this.isFull;
+    const canBoard = this.#calls.has(floor) && !this.#cabin.isFull;
     return this.hasDestinationAt(floor) || canBoard;
   }
 
@@ -166,7 +203,7 @@ export class Elevator {
   // Non annulla retroattivamente una destinazione già registrata da un
   // passeggero a bordo: se un piano viene messo fuori servizio dopo che
   // qualcuno l'ha già selezionato, quella richiesta resta ma non potrà mai
-  // essere aperta (limite noto, coerente con "non tocca chiamate in corso").
+  // essere aperta finché il piano non torna in servizio.
   withFloorOutOfService(floor, outOfService) {
     const next = new Set(this.#outOfServiceFloors);
     if (outOfService) next.add(floor);
@@ -181,38 +218,36 @@ export class Elevator {
     });
   }
 
-  // Fa scendere chi ha `to === floor corrente`. Restituisce sia il nuovo
-  // ascensore (senza quei passeggeri) sia le istanze uscite, perché il
-  // chiamante decide come trasformarle in un registro di viaggio (serve
-  // `now`, che l'ascensore non ha motivo di conoscere da solo).
-  alight() {
-    const arrived = this.#passengers.filter((p) => p.to === this.#floor);
-    if (arrived.length === 0) return { elevator: this, arrived };
-    const staying = this.#passengers.filter((p) => p.to !== this.#floor);
-    return { elevator: this.#with({ passengers: staying }), arrived };
+  openDoors() {
+    return this.#with({ cabin: this.#cabin.open() });
   }
 
-  // Imbarca fino ai posti disponibili tra i `waitingPassengers` proposti
-  // (tutti già confermati dal chiamante come in attesa al piano corrente).
-  // Registra subito la loro destinazione: da qui in poi è l'ascensore
-  // stesso a "sapere" di doverli portare a destinazione.
+  tickDoors() {
+    return this.#with({ cabin: this.#cabin.tick() });
+  }
+
+  withMoving(moving) {
+    return this.#with({ moving });
+  }
+
+  // Fa scendere chi arriva a destinazione e chi abbandona per esasperazione
+  // (delega alla Cabin). Restituisce sia il nuovo ascensore sia le due
+  // liste separate, perché il chiamante decide come registrarle.
+  alight() {
+    const { cabin, arrived, abandoning } = this.#cabin.alight(this.#floor);
+    return { elevator: this.#with({ cabin }), arrived, abandoning };
+  }
+
+  // Imbarca fino ai posti disponibili (delega alla Cabin) e registra subito
+  // la destinazione di chi sale: da qui in poi è l'ascensore stesso a
+  // "sapere" di doverli portare a destinazione.
   board(waitingPassengers, now = Date.now()) {
-    const seats = this.#capacity - this.#passengers.length;
-    if (seats <= 0 || waitingPassengers.length === 0) {
-      return { elevator: this, boarded: [] };
-    }
-    const boarded = waitingPassengers.slice(0, seats).map((p) => p.board(now));
-    let destinations = this.#destinations;
+    const { cabin, boarded } = this.#cabin.board(waitingPassengers, now);
+    let updated = this.#with({ cabin });
     boarded.forEach((p) => {
-      destinations = withAdded(destinations, p.to);
+      updated = updated.requestDestination(p.to);
     });
-    return {
-      elevator: this.#with({
-        passengers: [...this.#passengers, ...boarded],
-        destinations,
-      }),
-      boarded,
-    };
+    return { elevator: updated, boarded };
   }
 
   moveOneFloor(floorCount) {
@@ -244,6 +279,19 @@ export class Elevator {
     return this.#with({ direction });
   }
 
+  // Passa a ogni passeggero a bordo esattamente i fatti che vedrebbe una
+  // persona vera in cabina (non "il piano è fuori servizio" — quello
+  // l'ascensore lo sa, il passeggero no). Va chiamato a ogni valutazione
+  // dello scheduler, con piano/direzione già aggiornati per questo tick.
+  observeCabin(now = Date.now()) {
+    const facts = {
+      floor: this.#floor,
+      direction: this.#direction,
+      canOpenHere: this.canOpenDoorsAt(this.#floor),
+    };
+    return this.#with({ cabin: this.#cabin.withPassengersObserving(facts, now) });
+  }
+
   #with(patch) {
     return new Elevator({
       id: this.#id,
@@ -252,8 +300,9 @@ export class Elevator {
       destinations: this.#destinations,
       calls: this.#calls,
       outOfServiceFloors: this.#outOfServiceFloors,
-      passengers: this.#passengers,
-      capacity: this.#capacity,
+      cabin: this.#cabin,
+      moving: this.#moving,
+      emergencyCursor: this.#emergencyCursor,
       ...patch,
     });
   }

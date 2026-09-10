@@ -1,12 +1,12 @@
 // simulator.mjs
 //
 // Il reducer non conosce più i dettagli di "come" un ascensore decide la
-// direzione o apre le porte: quella logica vive dentro Elevator. Qui restano
-// solo l'orchestrazione (quando chiamare cosa) e i due stati che non
-// appartengono al dominio ascensori/passeggeri in senso stretto: le porte
-// della cabina (cabin.mjs, temporizzazione fisica) e i contatori di sessione
-// (moving, totalElevatorDistance, completedJourneys).
-import { cabinReducer, createCabin } from "./cabin.mjs";
+// direzione, apre le porte, o fa salire/scendere passeggeri: quella logica
+// vive dentro Elevator (che a sua volta delega la cabina fisica a Cabin, e
+// la percezione di ciascun passeggero a Passenger.observe). Qui restano
+// solo l'orchestrazione (quando chiamare cosa) e i due contatori di sessione
+// che non appartengono al dominio ascensori/passeggeri in senso stretto
+// (totalElevatorDistance, completedJourneys).
 import { Building } from "./Building.mjs";
 import { Passenger } from "./Passenger.mjs";
 
@@ -15,9 +15,8 @@ export function createSimulator(floors) {
     throw new Error("Servono almeno due piani");
   return {
     building: Building.create(floors, 1),
-    cabin: createCabin(),
-    moving: false,
     completedJourneys: [],
+    abandonedJourneys: [],
     totalElevatorDistance: 0,
   };
 }
@@ -31,27 +30,25 @@ function primaryElevator(building) {
 }
 
 function schedule(state) {
-  if (state.cabin.doors !== "CLOSED" || state.moving) return state;
-
   const elevator = primaryElevator(state.building);
+  if (elevator.cabin.doors !== "CLOSED" || elevator.moving) return state;
 
-  if (elevator.canOpenDoorsAt()) {
-    const marked = elevator.withStrandedMarked();
-    return {
-      ...state,
-      building: state.building.withElevator(marked),
-      cabin: cabinReducer(state.cabin, "OPEN"),
-    };
+  // No-op in ogni caso tranne uno: cabina bloccata in modo strutturale E
+  // almeno un passeggero già esasperato. Va valutato PRIMA di tutto il
+  // resto, perché è l'unica cosa che può rompere un deadlock vero — senza
+  // nuove richieste, canOpenDoorsAt() e decideDirection() qui sotto
+  // resterebbero entrambi bloccati per sempre.
+  const withEmergency = elevator.withEmergencyRequestsIfDeadlocked(state.building.floorCount);
+
+  if (withEmergency.canOpenDoorsAt()) {
+    const opened = withEmergency.openDoors().observeCabin();
+    return { ...state, building: state.building.withElevator(opened) };
   }
 
-  const updatedElevator = elevator
-    .decideDirection(state.building.floorCount)
-    .withStrandedMarked();
-  return {
-    ...state,
-    building: state.building.withElevator(updatedElevator),
-    moving: updatedElevator.direction !== null,
-  };
+  let updated = withEmergency.decideDirection(state.building.floorCount);
+  updated = updated.observeCabin();
+  updated = updated.withMoving(updated.direction !== null);
+  return { ...state, building: state.building.withElevator(updated) };
 }
 
 export function simulatorReducer(state, event) {
@@ -65,24 +62,26 @@ export function simulatorReducer(state, event) {
       const elevator = primaryElevator(state.building);
       if (elevator.isFloorOutOfService(event.floor)) return state;
       if (
-        !state.moving &&
-        state.cabin.doors !== "CLOSED" &&
+        !elevator.moving &&
+        elevator.cabin.doors !== "CLOSED" &&
         event.floor === elevator.floor
       )
         return state;
       const building = state.building.withElevator(
         elevator.requestDestination(event.floor),
       );
-      if (state.cabin.doors !== "CLOSED") return { ...state, building };
+      if (elevator.cabin.doors !== "CLOSED") return { ...state, building };
       return schedule({ ...state, building });
     }
 
     // Chiamata dall'esterno (pulsante "Chiama" al piano): è chi vuole
     // salire, quindi va soggetta alla capienza residua di chi la serve.
-    // Un'origine non raggiungibile da NESSUN ascensore non genera nulla; una
-    // destinazione casuale non cade mai su un piano che nessun ascensore
-    // serve (non avrebbe senso mandarci qualcuno). `Building.requestCall`
-    // sceglierà comunque, tra gli ascensori idonei, quello più economico.
+    // Un'origine non raggiungibile da NESSUN ascensore non genera nulla — è
+    // l'unico caso in cui assumiamo che l'utente lo sappia (è fisicamente
+    // lì, il pulsante non risponde). La destinazione invece è scelta alla
+    // cieca: un vero passeggero non ha modo di sapere se il piano dieci è
+    // fuori servizio prima di provarci, quindi può capitare — è esattamente
+    // lo scenario che gestiamo già con `isStranded`/abbandono.
     case "REQUEST_PASSENGER": {
       const { floor } = event;
       if (!state.building.isFloorReachable(floor)) return state;
@@ -90,7 +89,7 @@ export function simulatorReducer(state, event) {
       const eligibleDestinations = Array.from(
         { length: state.building.floorCount },
         (_, f) => f,
-      ).filter((f) => f !== floor && state.building.isFloorReachable(f));
+      ).filter((f) => f !== floor);
       if (eligibleDestinations.length === 0) return state;
       const destination =
         eligibleDestinations[Math.floor(Math.random() * eligibleDestinations.length)];
@@ -99,17 +98,18 @@ export function simulatorReducer(state, event) {
       const building = state.building.requestCall(floor, passenger);
       const nextState = { ...state, building };
 
-      if (state.cabin.doors !== "CLOSED") return nextState;
+      const elevator = primaryElevator(building);
+      if (elevator.cabin.doors !== "CLOSED") return nextState;
       return schedule(nextState);
     }
 
     case "MOVE_TICK": {
-      if (!state.moving || state.cabin.doors !== "CLOSED") return state;
-
       const elevator = primaryElevator(state.building);
-      const moved = elevator.moveOneFloor(state.building.floorCount);
+      if (!elevator.moving || elevator.cabin.doors !== "CLOSED") return state;
+
+      const moved = elevator.moveOneFloor(state.building.floorCount).withMoving(false);
       const building = state.building.withElevator(moved);
-      const scheduledState = schedule({ ...state, moving: false, building });
+      const scheduledState = schedule({ ...state, building });
 
       return {
         ...scheduledState,
@@ -118,18 +118,27 @@ export function simulatorReducer(state, event) {
     }
 
     case "DOOR_TICK": {
-      const nextCabin = cabinReducer(state.cabin, "TICK");
-      let building = state.building;
-      let elevator = primaryElevator(building);
-      let completedJourneys = [...state.completedJourneys];
+      let elevator = primaryElevator(state.building);
+      const prevDoors = elevator.cabin.doors;
+      elevator = elevator.tickDoors();
+      const nextDoors = elevator.cabin.doors;
 
-      if (nextCabin.doors === "OPEN") {
+      let building = state.building;
+      let completedJourneys = [...state.completedJourneys];
+      let abandonedJourneys = [...state.abandonedJourneys];
+
+      if (nextDoors === "OPEN") {
         const now = Date.now();
 
-        const { elevator: afterAlight, arrived } = elevator.alight();
+        const { elevator: afterAlight, arrived, abandoning } = elevator.alight();
         elevator = afterAlight;
         if (arrived.length > 0) {
           completedJourneys.push(...arrived.map((p) => p.toCompletedJourney(now)));
+        }
+        if (abandoning.length > 0) {
+          abandonedJourneys.push(
+            ...abandoning.map((p) => p.toAbandonedJourney(elevator.floor, now)),
+          );
         }
 
         elevator = elevator.serveFloor();
@@ -146,7 +155,7 @@ export function simulatorReducer(state, event) {
         }
       }
 
-      if (nextCabin.doors === "CLOSED" && state.cabin.doors !== "CLOSED") {
+      if (nextDoors === "CLOSED" && prevDoors !== "CLOSED") {
         const currentFloor = elevator.floor;
         if (building.waiting.some((p) => p.from === currentFloor)) {
           elevator = elevator.requestCall(currentFloor);
@@ -154,24 +163,36 @@ export function simulatorReducer(state, event) {
       }
 
       building = building.withElevator(elevator);
-      return schedule({ ...state, cabin: nextCabin, building, completedJourneys });
+      return schedule({ ...state, building, completedJourneys, abandonedJourneys });
     }
+
+    // Non fa avanzare nulla da sola: serve solo a far "notare" ai
+    // passeggeri il tempo trascorso anche quando l'ascensore è fermo e
+    // nessun altro evento arriverebbe a farlo girare. Senza questo, un
+    // dubbio che ha già superato la soglia di pazienza (in termini di
+    // tempo reale trascorso) non diventerebbe mai "esasperato" finché non
+    // arriva un evento qualsiasi. Passa da schedule() (non solo
+    // observeCabin()) perché è lì che vive anche il tentativo di sblocco
+    // di un deadlock totale: appena qualcuno risulta esasperato, va
+    // considerata subito, nello stesso tick, altrimenti l'esasperazione
+    // verrebbe registrata ma l'ascensore non ne farebbe nulla finché non
+    // arriva un evento successivo.
+    case "OBSERVE_TICK": {
+      return schedule(state);
+    }
+
     // Segna/rimuove lo stato "fuori servizio" di un piano PER QUESTO
     // ascensore (oggi l'unico; con più ascensori l'evento porterà anche un
     // elevatorId). Non tocca chiamate già registrate: impedisce solo nuove
-    // chiamate e nuove selezioni da quel piano. Richiede SEMPRE una nuova
-    // valutazione: se l'ascensore era fermo (nessun timer automatico lo
-    // risveglia da solo — vedi useElevatorSimulator), il toggle potrebbe
-    // aver appena reso raggiungibile una destinazione che prima non lo era.
+    // chiamate e nuove selezioni da quel piano. Nessuna cancellazione
+    // esplicita del dubbio dei passeggeri, qui: schedule() (chiamato subito
+    // sotto) ricalcola la direzione e fa osservare a ciascuno i fatti
+    // aggiornati — chi era bloccato per questo piano si rassicura da sé,
+    // nello stesso istante, se e quando l'ascensore torna a muoversi verso
+    // di lui.
     case "SET_OUT_OF_SERVICE": {
       const elevator = primaryElevator(state.building);
-      let updated = elevator.withFloorOutOfService(event.floor, event.value);
-      if (!event.value) {
-        // il piano torna in servizio: chi era bloccato per quella
-        // destinazione smette di esserlo, prima ancora che schedule()
-        // decida se e come ripartire.
-        updated = updated.withStrandedCleared(event.floor);
-      }
+      const updated = elevator.withFloorOutOfService(event.floor, event.value);
       const building = state.building.withElevator(updated);
       return schedule({ ...state, building });
     }

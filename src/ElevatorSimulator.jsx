@@ -1,4 +1,5 @@
 // ElevatorSimulator.jsx
+import { useEffect } from "react";
 import { CabinPanel } from "./Cabin.jsx";
 import "./ElevatorSimulator.css";
 import Floor from "./Floor";
@@ -10,6 +11,16 @@ const FLOORS = 5;
 export default function ElevatorSimulator() {
   const simulator = useElevatorSimulator(FLOORS);
 
+  // Battito che fa "notare" ai passeggeri fermi il tempo trascorso, anche
+  // quando l'ascensore è idle e nessun altro evento arriverebbe a far
+  // scattare l'esasperazione (vedi OBSERVE_TICK in simulator.mjs). Quando
+  // l'ascensore è già attivo, questo evento è un no-op innocuo: i tick di
+  // movimento/porte se ne occupano già da soli.
+  useEffect(() => {
+    const timer = setInterval(() => simulator.dispatch({ type: "OBSERVE_TICK" }), 1000);
+    return () => clearInterval(timer);
+  }, [simulator.dispatch]);
+
   // CORREZIONE: Estraiamo esplicitamente totalElevatorDistance dallo stato del simulatore
   const {
     elevator,
@@ -18,6 +29,7 @@ export default function ElevatorSimulator() {
     passengersWaiting,
     passengersInside,
     completedJourneys,
+    abandonedJourneys,
     dispatch,
     totalElevatorDistance, // <-- Garantisce la lettura corretta dal Reducer
     outOfServiceByFloor,
@@ -82,6 +94,8 @@ export default function ElevatorSimulator() {
         onSelectFloor={requestFloor}
         passengersInside={passengersInside || []}
         isDeadlocked={elevator.isDeadlocked()}
+        isBroadcastingEmergency={elevator.isBroadcastingEmergency}
+        needsOperatorIntervention={elevator.needsOperatorIntervention(FLOORS)}
       />
 
       {/* Intestazione Tabelle */}
@@ -126,6 +140,7 @@ export default function ElevatorSimulator() {
                 elevator.floor === floor ? passengersInside || [] : []
               }
               completedJourneys={completedJourneys || []}
+              abandonedJourneys={abandonedJourneys || []}
             />
           ),
         )}
