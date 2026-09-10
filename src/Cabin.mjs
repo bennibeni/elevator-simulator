@@ -1,7 +1,5 @@
 // Cabin.mjs
 //
-// Gestione della cabina dell'ascensore: porte, capienza e passeggeri.
-//
 // La cabina: porte (macchina a stati) + capienza + chi ci sta fisicamente
 // dentro. Elevator possiede una Cabin e le delega tutto ciò che riguarda
 // l'abitacolo; lui si occupa solo di piano/direzione/dispatch — non sa più
@@ -41,6 +39,9 @@ export class Cabin {
   }
   get passengers() {
     return this.#passengers;
+  }
+  get capacity() {
+    return this.#capacity;
   }
   get isFull() {
     return this.#passengers.length >= this.#capacity;

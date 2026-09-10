@@ -10,11 +10,17 @@
 import { Building } from "./Building.mjs";
 import { Passenger } from "./Passenger.mjs";
 
+// Unica fonte di verità per la capienza reale della cabina: da qui in poi
+// si propaga a Elevator, Cabin, e (tramite Cabin.capacity) alla UI, invece
+// di restare un valore di default sepolto in tre costruttori diversi e
+// ripetuto a mano nel testo dell'interfaccia.
+const CABIN_CAPACITY = 4;
+
 export function createSimulator(floors) {
   if (!Number.isInteger(floors) || floors < 2)
     throw new Error("Servono almeno due piani");
   return {
-    building: Building.create(floors, 1),
+    building: Building.create(floors, 1, CABIN_CAPACITY),
     completedJourneys: [],
     abandonedJourneys: [],
     totalElevatorDistance: 0,

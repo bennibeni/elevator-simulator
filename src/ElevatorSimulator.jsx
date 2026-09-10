@@ -111,6 +111,7 @@ export default function ElevatorSimulator() {
         outOfServiceByFloor={outOfServiceByFloor}
         onSelectFloor={requestFloor}
         passengersInside={passengersInside || []}
+        capacity={cabin.capacity}
         isDeadlocked={elevator.isDeadlocked(FLOORS)}
         isBroadcastingEmergency={elevator.isBroadcastingEmergency}
         needsOperatorIntervention={elevator.needsOperatorIntervention(FLOORS)}
@@ -120,7 +121,7 @@ export default function ElevatorSimulator() {
       <div
         style={{
           display: "grid",
-          gridTemplateColumns: "80px 100px 150px 140px 1fr 130px",
+          gridTemplateColumns: "90px 80px 100px 150px 140px 1fr 130px",
           gap: "15px",
           padding: "10px 10px 0 10px",
           fontSize: "0.8rem",
@@ -128,6 +129,7 @@ export default function ElevatorSimulator() {
           fontWeight: "bold",
         }}
       >
+        <div>Piano</div>
         <div>Stato</div>
         <div>Pulsante</div>
         <div>Passeggeri in Attesa</div>

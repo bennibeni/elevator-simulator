@@ -1,7 +1,5 @@
 // Cabin.jsx
 
-const MAX_CAPACITY = 3;
-
 export function CabinPanel({
   floor,
   direction,
@@ -10,6 +8,7 @@ export function CabinPanel({
   outOfServiceByFloor = [],
   onSelectFloor,
   passengersInside = [],
+  capacity = 3,
   isDeadlocked = false,
   isBroadcastingEmergency = false,
   needsOperatorIntervention = false,
@@ -51,7 +50,7 @@ export function CabinPanel({
             marginTop: "-8px",
           }}
         >
-          Carico Max: 3 passeggeri
+          Carico Max: {capacity} passeggeri
         </span>
 
         <div
@@ -171,7 +170,7 @@ export function CabinPanel({
                 );
               })
             )}
-            {passengersInside.length >= 3 && !isDeadlocked && (
+            {passengersInside.length >= capacity && !isDeadlocked && (
               <span
                 style={{
                   fontSize: "0.7rem",

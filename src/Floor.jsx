@@ -149,7 +149,7 @@ export default function Floor({
       className="floor-row"
       style={{
         display: "grid",
-        gridTemplateColumns: "80px 100px 150px 140px 1fr 130px",
+        gridTemplateColumns: "90px 80px 100px 150px 140px 1fr 130px",
         alignItems: "center",
         gap: "15px",
         padding: "15px 10px",
@@ -158,6 +158,20 @@ export default function Floor({
         opacity: outOfService ? 0.5 : 1,
       }}
     >
+      <div
+        style={{
+          backgroundColor: currentFloorColor,
+          color: floor === 2 ? "#222" : "white",
+          fontWeight: "bold",
+          padding: "6px 12px",
+          borderRadius: "4px",
+          textAlign: "center",
+          boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
+        }}
+      >
+        Piano {floor}
+      </div>
+
       <div
         className="floor-display"
         style={{
@@ -290,43 +304,20 @@ export default function Floor({
       </div>
 
       <div
+        className="exit-area"
         style={{
           display: "flex",
-          alignItems: "center",
-          gap: "15px",
-          width: "100%",
+          flexWrap: "wrap",
+          gap: "6px",
+          background: "#fafafa",
+          padding: "6px",
+          borderRadius: "4px",
+          minHeight: "32px",
+          flexGrow: 1,
+          border: `2px solid ${currentFloorColor}`,
+          overflow: "hidden",
         }}
       >
-        <div
-          style={{
-            backgroundColor: currentFloorColor,
-            color: floor === 2 ? "#222" : "white",
-            fontWeight: "bold",
-            padding: "6px 12px",
-            borderRadius: "4px",
-            minWidth: "80px",
-            textAlign: "center",
-            boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
-          }}
-        >
-          Piano {floor}
-        </div>
-
-        <div
-          className="exit-area"
-          style={{
-            display: "flex",
-            flexWrap: "wrap",
-            gap: "6px",
-            background: "#fafafa",
-            padding: "6px",
-            borderRadius: "4px",
-            minHeight: "32px",
-            flexGrow: 1,
-            border: `2px solid ${currentFloorColor}`,
-            overflow: "hidden",
-          }}
-        >
           {walkingOut.map((p) => {
             const isAbandoned = p.exitedAtFloor !== undefined;
             const dot = (
@@ -364,7 +355,6 @@ export default function Floor({
             );
           })}
         </div>
-      </div>
 
       <button
         type="button"

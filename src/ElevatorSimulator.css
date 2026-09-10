@@ -57,6 +57,13 @@
 .building-container button[aria-pressed="true"] {
   background: #c52c24;
 }
+/* Prima non esisteva alcuno stile per il focus da tastiera: chi naviga
+   senza mouse vedeva solo il default incoerente del browser. Un contorno
+   ben visibile è economico da aggiungere e non ha controindicazioni. */
+.building-container button:focus-visible {
+  outline: 3px solid #003d80;
+  outline-offset: 2px;
+}
 
 .building-container .shaft {
   width: 140px;

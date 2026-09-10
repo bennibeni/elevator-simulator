@@ -112,10 +112,15 @@ test("Elevator: a cabina piena su un capolinea inverte la direzione invece di re
   assert.equal(elevator.floor, 4);
   elevator = elevator.serveFloor();
 
-  // Cabina piena (3/3): nessuno a bordo scende al piano 4 (destinazioni 3,2,0).
-  const passengers = [Passenger.create(1, 3), Passenger.create(1, 2), Passenger.create(2, 0)];
+  // Cabina piena (4/4): nessuno a bordo scende al piano 4 (destinazioni 3,2,0,1).
+  const passengers = [
+    Passenger.create(1, 3),
+    Passenger.create(1, 2),
+    Passenger.create(2, 0),
+    Passenger.create(2, 1),
+  ];
   ({ elevator } = elevator.board(passengers));
-  assert.equal(elevator.passengers.length, 3);
+  assert.equal(elevator.passengers.length, 4);
 
   // Una chiamata esterna al piano 4 non è servibile ora (piena): non deve
   // impedire di invertire la marcia per le destinazioni a bordo.
@@ -1340,7 +1345,12 @@ test("Reducer: cabina piena non insegue più chiamate che non può servire — n
 
 test("Elevator: decideDirection ignora una chiamata a cabina piena (non azionabile), ma non una destinazione", () => {
   let elevator = createSimulator(5).building.elevators[0];
-  const passengers = [Passenger.create(0, 2), Passenger.create(0, 2), Passenger.create(0, 2)];
+  const passengers = [
+    Passenger.create(0, 2),
+    Passenger.create(0, 2),
+    Passenger.create(0, 2),
+    Passenger.create(0, 2),
+  ];
   ({ elevator } = elevator.board(passengers)); // piena, destinazione unica: piano 2
   elevator = elevator.withFloorOutOfService(2, true); // unica destinazione fuori servizio
   elevator = elevator.requestCall(4); // chiamata esterna valida, ma piena: non imbarcabile
