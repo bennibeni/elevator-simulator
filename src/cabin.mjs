@@ -1,4 +1,5 @@
 // Cabin.mjs
+//
 // Gestione della cabina dell'ascensore: porte, capienza e passeggeri.
 //
 // La cabina: porte (macchina a stati) + capienza + chi ci sta fisicamente
