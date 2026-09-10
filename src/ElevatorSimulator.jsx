@@ -1,8 +1,9 @@
 // ElevatorSimulator.jsx
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { CabinPanel } from "./Cabin.jsx";
 import "./ElevatorSimulator.css";
 import Floor from "./Floor";
+import GuideModal from "./GuideModal.jsx";
 import { useElevatorSimulator } from "./useElevatorSimulator";
 import { usePassengerSimulation } from "./usePassengerSimulation";
 
@@ -10,6 +11,7 @@ const FLOORS = 5;
 
 export default function ElevatorSimulator() {
   const simulator = useElevatorSimulator(FLOORS);
+  const [showGuide, setShowGuide] = useState(false);
 
   // Battito che fa "notare" ai passeggeri fermi il tempo trascorso, anche
   // quando l'ascensore è idle e nessun altro evento arriverebbe a far
@@ -85,6 +87,22 @@ export default function ElevatorSimulator() {
 
   return (
     <div className="building-container">
+      <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: "8px" }}>
+        <button
+          type="button"
+          onClick={() => setShowGuide(true)}
+          style={{
+            padding: "6px 12px",
+            fontSize: "0.85rem",
+            background: "#f5f5f5",
+            color: "#333",
+            border: "1px solid #ccc",
+          }}
+        >
+          ❓ Guida
+        </button>
+      </div>
+      <GuideModal open={showGuide} onClose={() => setShowGuide(false)} />
       <CabinPanel
         floor={elevator.floor}
         direction={elevator.direction}
