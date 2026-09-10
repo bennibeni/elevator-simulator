@@ -122,14 +122,13 @@ export function simulatorReducer(state, event) {
       const prevDoors = elevator.cabin.doors;
       elevator = elevator.tickDoors();
       const nextDoors = elevator.cabin.doors;
+      const now = Date.now();
 
       let building = state.building;
       let completedJourneys = [...state.completedJourneys];
       let abandonedJourneys = [...state.abandonedJourneys];
 
       if (nextDoors === "OPEN") {
-        const now = Date.now();
-
         const { elevator: afterAlight, arrived, abandoning } = elevator.alight();
         elevator = afterAlight;
         if (arrived.length > 0) {
@@ -139,6 +138,19 @@ export function simulatorReducer(state, event) {
           abandonedJourneys.push(
             ...abandoning.map((p) => p.toAbandonedJourney(elevator.floor, now)),
           );
+        }
+
+        // Chi è appena sceso (arrivo o abbandono, non importa) e può
+        // rientrare resta "fuori, in attesa" a questo piano — non ancora un
+        // passeggero in attesa vero e proprio (deve prima aspettare che le
+        // porte si richiudano, più sotto) e senza aver premuto alcun
+        // pulsante: sale solo se l'ascensore torna qui per un altro motivo.
+        const justExited = [...arrived, ...abandoning];
+        const newlyLingering = justExited
+          .map((p) => p.exit(elevator.floor, now))
+          .filter(Boolean);
+        if (newlyLingering.length > 0) {
+          building = building.withLingering([...building.lingering, ...newlyLingering]);
         }
 
         elevator = elevator.serveFloor();
@@ -160,6 +172,26 @@ export function simulatorReducer(state, event) {
         if (building.waiting.some((p) => p.from === currentFloor)) {
           elevator = elevator.requestCall(currentFloor);
         }
+
+        // Le porte del ciclo in cui erano usciti si sono appena chiuse: chi
+        // è ancora "fuori, in attesa" a QUESTO piano diventa ora un normale
+        // passeggero in attesa (destinazione: il piano da cui era salito
+        // l'ultima volta). Chi era in attesa a un piano diverso resta
+        // lingering, invariato.
+        const stillLingering = [];
+        const readyToBoard = [];
+        for (const p of building.lingering) {
+          if (p.exitedAtFloor === currentFloor) {
+            readyToBoard.push(p.readyForPickup(now));
+          } else {
+            stillLingering.push(p);
+          }
+        }
+        if (readyToBoard.length > 0) {
+          building = building
+            .withLingering(stillLingering)
+            .withWaiting([...building.waiting, ...readyToBoard]);
+        }
       }
 
       building = building.withElevator(elevator);
@@ -177,8 +209,16 @@ export function simulatorReducer(state, event) {
     // considerata subito, nello stesso tick, altrimenti l'esasperazione
     // verrebbe registrata ma l'ascensore non ne farebbe nulla finché non
     // arriva un evento successivo.
+    //
+    // È anche il punto in cui un passeggero rientrato-in-attesa (vedi
+    // canReenter) scade definitivamente se l'ascensore non è tornato al suo
+    // piano in tempo — senza questo, resterebbe in coda per sempre.
     case "OBSERVE_TICK": {
-      return schedule(state);
+      const now = Date.now();
+      const building = state.building
+        .withWaiting(state.building.waiting.filter((p) => !p.hasExpired(now)))
+        .withLingering(state.building.lingering.filter((p) => !p.hasExpired(now)));
+      return schedule({ ...state, building });
     }
 
     // Segna/rimuove lo stato "fuori servizio" di un piano PER QUESTO

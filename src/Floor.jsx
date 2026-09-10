@@ -69,8 +69,15 @@ export default function Floor({
     const newlyDeparted = departed.filter((p) => !seenIds.current.has(p.id));
     if (newlyDeparted.length === 0) return;
 
-    newlyDeparted.forEach((p, index) => {
-      seenIds.current.add(p.id);
+    newlyDeparted.forEach((p) => seenIds.current.add(p.id));
+
+    // Chi può rientrare non si dissolve mai: potrebbe tornare, quindi non
+    // sta "lasciando la scena" nel senso che l'animazione rappresenta.
+    // Ricompare da solo, quasi subito, nella colonna "Passeggeri in Attesa"
+    // (building.waiting) appena diventa un normale candidato all'imbarco —
+    // nessuna animazione dedicata qui: quella rappresentazione esiste già.
+    const toFade = newlyDeparted.filter((p) => !p.canReenter);
+    toFade.forEach((p, index) => {
       startFade(p, index * STAGGER_MS);
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps

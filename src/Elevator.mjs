@@ -89,51 +89,53 @@ export class Elevator {
     return this.#emergencyCursor !== null;
   }
 
-  // Vero quando la cabina è bloccata in modo strutturale: piena, e OGNI
-  // passeggero a bordo ha una destinazione oggi fuori servizio. In questo
-  // stato l'ascensore non può fare letteralmente nulla — non può scendere
-  // nessuno (destinazioni irraggiungibili) né salire nessuno (piena) — finché
-  // almeno uno di quei piani non torna in servizio. Va distinto da un'attesa
-  // normale (cabina piena ma con destinazioni valide, che si risolve da sola
-  // strada facendo).
-  isDeadlocked() {
-    if (this.#cabin.passengers.length === 0 || !this.#cabin.isFull) return false;
-    return this.#cabin.passengers.every((p) => this.isFloorOutOfService(p.to));
+  // Vero quando l'ascensore non ha DAVVERO alcuna azione disponibile:
+  // nessuna destinazione o chiamata raggiungibile, da nessuna parte. NON
+  // richiede che la cabina sia piena — la piena è solo il modo più comune
+  // in cui questo capita (nessuno può scendere perché le destinazioni sono
+  // fuori servizio, nessuno può salire perché è piena), ma può succedere
+  // anche a cabina NON piena: se semplicemente non c'è alcun'altra
+  // chiamata pendente da nessuna parte nell'edificio, "esserci ancora
+  // posto" non serve a niente — non c'è nessun altro da andare a
+  // prendere. Richiede almeno un passeggero a bordo: un ascensore vuoto e
+  // fermo non è "bloccato", è solo in attesa.
+  isDeadlocked(floorCount) {
+    if (this.#cabin.passengers.length === 0) return false;
+    if (this.canOpenDoorsAt()) return false;
+    return this.decideDirection(floorCount).direction === null;
   }
 
   // Un deadlock vero (isDeadlocked) non si scioglie mai da solo: nessuna
   // porta si riaprirà mai, perché nessuna richiesta esistente è azionabile.
   // Se almeno un passeggero a bordo è già esasperato, prende l'unica azione
-  // che gli resta senza un pulsante d'emergenza dedicato: preme la
-  // pulsantiera, UN PIANO ALLA VOLTA (più realistico di premerli tutti in
-  // un colpo solo — e dà tempo alla UI di mostrare il lampeggio via via che
-  // ogni piano si accende). Ogni chiamata a questo metodo avanza di un
-  // piano; i piani già fuori servizio restano no-op (li rifiuta comunque
-  // `requestDestination`) ma consumano comunque il turno, come se il dito
-  // scorresse su tutta la fila. Non serve sapere DOVE si fermerà per primo:
-  // una volta aperte le porte, in un punto qualsiasi, chiunque sia
-  // esasperato scende comunque (vedi Cabin.alight) — l'azione crea solo
-  // l'occasione, non decide l'esito. Qualunque passeggero esasperato può
-  // farlo, e nessun altro a bordo (in qualunque stato si trovi) ha motivo
-  // di opporsi: non gli toglie nulla, aggiunge solo fermate.
+  // che gli resta senza un pulsante d'emergenza dedicato: preme TUTTA la
+  // pulsantiera. È un'azione UNICA — un solo passaggio, piano per piano,
+  // mai ripetuto — diluita nel tempo (un piano per chiamata) solo per dare
+  // un effetto più realistico, come se un dito scorresse sulla fila invece
+  // di premere tutto in un istante. Ogni pressione resta registrata per
+  // sempre (anche sui piani oggi fuori servizio: vedi requestDestination),
+  // quindi non serve mai ripetere il giro — se un piano tornasse in
+  // servizio più tardi, l'ascensore se ne accorge da solo, esattamente
+  // come già succede per la destinazione di un passeggero vero. Non serve
+  // sapere DOVE si fermerà per primo: una volta aperte le porte, in un
+  // punto qualsiasi, chiunque sia esasperato scende comunque (vedi
+  // Cabin.alight) — l'azione crea solo l'occasione, non decide l'esito.
+  // Qualunque passeggero esasperato può farlo, e nessun altro a bordo (in
+  // qualunque stato si trovi) ha motivo di opporsi: non gli toglie nulla,
+  // aggiunge solo fermate.
   withEmergencyRequestsIfDeadlocked(floorCount) {
     const shouldBroadcast =
-      this.isDeadlocked() && this.#cabin.passengers.some((p) => p.isExasperated);
+      this.isDeadlocked(floorCount) && this.#cabin.passengers.some((p) => p.isExasperated);
 
     if (!shouldBroadcast) {
       // situazione risolta (o mai iniziata): nessuna sequenza da proseguire
       return this.#emergencyCursor === null ? this : this.#with({ emergencyCursor: null });
     }
 
-    // Il cursore NON si ferma mai da solo: se un giro completo non trova
-    // nulla, riparte da capo (modulo). Altrimenti, se un operatore
-    // riattivasse un piano dopo che la sequenza ha già "rinunciato", quel
-    // piano non verrebbe mai più riprovato. I piani già fuori servizio
-    // restano no-op (li rifiuta comunque `requestDestination`), quindi
-    // ripeterli non costa nulla.
     const cursor = this.#emergencyCursor ?? 0;
-    const floorToPress = cursor % floorCount;
-    return this.requestDestination(floorToPress).#with({ emergencyCursor: cursor + 1 });
+    if (cursor >= floorCount) return this; // passaggio già completo: nient'altro da premere
+
+    return this.requestDestination(cursor).#with({ emergencyCursor: cursor + 1 });
   }
 
   // Vero solo quando è DAVVERO impossibile fare qualunque cosa: cabina in
@@ -143,7 +145,7 @@ export class Elevator {
   // subito la realtà se un operatore riattiva un piano — non deve aspettare
   // che la sequenza ci "ripassi" per accorgersene.
   needsOperatorIntervention(floorCount) {
-    if (!this.isDeadlocked()) return false;
+    if (!this.isDeadlocked(floorCount)) return false;
     for (let floor = 0; floor < floorCount; floor++) {
       if (!this.isFloorOutOfService(floor)) return false;
     }
@@ -180,13 +182,14 @@ export class Elevator {
     return Math.abs(this.#floor - floor);
   }
 
+  // Registra sempre la richiesta, anche su un piano oggi fuori servizio: un
+  // vero pulsante si accende quando lo premi, non rifiuta di farlo — è
+  // l'ascensore, altrove (decideDirection/canOpenDoorsAt), a decidere se e
+  // quando è azionabile. Senza questo, una pressione su un piano
+  // temporaneamente fuori servizio sparirebbe senza lasciare traccia: se
+  // il piano tornasse in servizio più tardi, nessuno se ne accorgerebbe.
   requestDestination(floor) {
-    if (
-      !Number.isInteger(floor) ||
-      this.#destinations.has(floor) ||
-      this.isFloorOutOfService(floor)
-    )
-      return this;
+    if (!Number.isInteger(floor) || this.#destinations.has(floor)) return this;
     return this.#with({ destinations: withAdded(this.#destinations, floor) });
   }
 
@@ -264,11 +267,23 @@ export class Elevator {
   // corrente, che sola sa dire se la richiesta lì è davvero azionabile ora:
   // se non lo è, non deve "ancorare" la direzione attuale (è lo stallo che
   // si presentava a cabina piena su un capolinea).
+  //
+  // Una CHIAMATA a cabina piena non è azionabile — nessuno potrà comunque
+  // salire lì — quindi non deve nemmeno "attirare" l'ascensore: altrimenti,
+  // con destinazioni a bordo tutte fuori servizio, l'ascensore continua a
+  // inseguire chiamate che non potrà mai servire, oscillando indefinitamente
+  // tra loro. Sembra occupato (si muove, ha sempre una direzione), ma non
+  // fa nulla di utile — e i passeggeri a bordo non diventano mai dubbiosi,
+  // perché per loro non è mai né fermo né arrivato al piano giusto: il
+  // dubbio non ha modo di innescarsi, l'esasperazione nemmeno, e nessun
+  // avviso compare mai. Le DESTINAZIONI restano sempre valide invece,
+  // piena o no: qualcuno a bordo può sempre scendere alla propria fermata.
   decideDirection(floorCount) {
     const canServeCurrentFloor = this.canOpenDoorsAt(this.#floor);
     const requests = Array.from({ length: floorCount }, (_, floor) => {
       if (this.isFloorOutOfService(floor)) return false;
-      return this.hasDestinationAt(floor) || this.#calls.has(floor);
+      const canBoardHere = this.#calls.has(floor) && !this.#cabin.isFull;
+      return this.hasDestinationAt(floor) || canBoardHere;
     });
     const direction = lookDirection({
       floor: this.#floor,

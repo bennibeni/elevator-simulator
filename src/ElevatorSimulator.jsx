@@ -93,7 +93,7 @@ export default function ElevatorSimulator() {
         outOfServiceByFloor={outOfServiceByFloor}
         onSelectFloor={requestFloor}
         passengersInside={passengersInside || []}
-        isDeadlocked={elevator.isDeadlocked()}
+        isDeadlocked={elevator.isDeadlocked(FLOORS)}
         isBroadcastingEmergency={elevator.isBroadcastingEmergency}
         needsOperatorIntervention={elevator.needsOperatorIntervention(FLOORS)}
       />

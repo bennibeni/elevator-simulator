@@ -13,11 +13,13 @@ export class Building {
   #floorCount;
   #elevators;
   #waiting;
+  #lingering; // usciti (con canReenter) in attesa che le porte si chiudano
 
-  constructor({ floorCount, elevators, waiting }) {
+  constructor({ floorCount, elevators, waiting, lingering }) {
     this.#floorCount = floorCount;
     this.#elevators = elevators;
     this.#waiting = waiting;
+    this.#lingering = lingering;
     Object.freeze(this);
   }
 
@@ -28,6 +30,7 @@ export class Building {
         Elevator.create(i, floorCount, capacity),
       ),
       waiting: [],
+      lingering: [],
     });
   }
 
@@ -39,6 +42,9 @@ export class Building {
   }
   get waiting() {
     return this.#waiting;
+  }
+  get lingering() {
+    return this.#lingering;
   }
 
   elevatorById(id) {
@@ -63,6 +69,10 @@ export class Building {
     return this.#with({ waiting });
   }
 
+  withLingering(lingering) {
+    return this.#with({ lingering });
+  }
+
   // Registra una chiamata esterna: sceglie l'ascensore più economico TRA
   // QUELLI CHE SERVONO QUEL PIANO (non tutti — è qui che la distinzione
   // ascensore-piano conta davvero) e aggiunge il passeggero alla coda di chi
@@ -85,6 +95,7 @@ export class Building {
       floorCount: this.#floorCount,
       elevators: this.#elevators,
       waiting: this.#waiting,
+      lingering: this.#lingering,
       ...patch,
     });
   }

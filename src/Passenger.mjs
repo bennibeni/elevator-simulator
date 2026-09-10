@@ -13,9 +13,12 @@
 //   canBeStranded    — può diventare dubbioso?
 //   canBeExasperated — può, una volta dubbioso, diventare esasperato?
 //   canAbandon       — può, una volta esasperato, uscire di scena?
-// Oggi si impostano singolarmente (tutti veri di default, cioè il
-// comportamento di sempre). In futuro una "tipologia" di passeggero potrà
-// fissare i tre insieme come un pacchetto coerente (`type`, già presente
+//   canReenter       — una volta uscito (arrivo o abbandono), può rientrare
+//                      se l'ascensore torna al suo piano in tempo?
+// Oggi si impostano singolarmente (tutti veri di default TRANNE
+// canReenter, che è un comportamento nuovo e resta disattivato finché non
+// lo si chiede esplicitamente). In futuro una "tipologia" di passeggero
+// potrà fissarli insieme come un pacchetto coerente (`type`, già presente
 // come attributo generico, per ora senza alcun effetto).
 
 let nextId = 0;
@@ -23,6 +26,13 @@ let nextId = 0;
 const PALETTE = ["#ff3b30", "#4cd964", "#ffcc00", "#5ac8fa", "#5856d6"];
 
 export const EXASPERATION_THRESHOLD_MS = 5000;
+
+// Quanto a lungo un passeggero uscito (con canReenter) resta "recuperabile"
+// prima di sparire per sempre. NOTA: allineato di proposito alla durata
+// della dissolvenza visiva in Floor.jsx (FADE_DURATION_MS) — "finché non si
+// è dissolto" è per ora un vincolo di dominio tenuto sincronizzato a mano
+// con la UI, non derivato automaticamente da essa.
+export const REENTRY_WINDOW_MS = 1800;
 
 export function colorForFloor(floor) {
   return PALETTE[floor % PALETTE.length];
@@ -41,7 +51,10 @@ export class Passenger {
   #canBeStranded;
   #canBeExasperated;
   #canAbandon;
+  #canReenter;
   #type;
+  #exitedAtFloor; // non null mentre è "fuori, in attesa di rientrare"
+  #exitedAt; // quando è uscito — usato per la finestra di recupero
 
   constructor({
     id,
@@ -56,7 +69,10 @@ export class Passenger {
     canBeStranded = true,
     canBeExasperated = true,
     canAbandon = true,
+    canReenter = false,
     type = "standard",
+    exitedAtFloor = null,
+    exitedAt = null,
   }) {
     this.#id = id;
     this.#from = from;
@@ -70,7 +86,10 @@ export class Passenger {
     this.#canBeStranded = canBeStranded;
     this.#canBeExasperated = canBeExasperated;
     this.#canAbandon = canAbandon;
+    this.#canReenter = canReenter;
     this.#type = type;
+    this.#exitedAtFloor = exitedAtFloor;
+    this.#exitedAt = exitedAt;
     Object.freeze(this);
   }
 
@@ -79,6 +98,7 @@ export class Passenger {
       canBeStranded = true,
       canBeExasperated = true,
       canAbandon = true,
+      canReenter = false,
       type = "standard",
     } = traits;
     return new Passenger({
@@ -90,6 +110,7 @@ export class Passenger {
       canBeStranded,
       canBeExasperated,
       canAbandon,
+      canReenter,
       type,
     });
   }
@@ -136,8 +157,20 @@ export class Passenger {
   get canAbandon() {
     return this.#canAbandon;
   }
+  get canReenter() {
+    return this.#canReenter;
+  }
   get type() {
     return this.#type;
+  }
+  // Vero mentre è "fuori, in attesa di rientrare" — uscito dall'ascensore
+  // ma non ancora ritrasformato in un normale passeggero in attesa (accade
+  // alla chiusura delle porte del ciclo in cui è uscito).
+  get isLingering() {
+    return this.#exitedAtFloor !== null;
+  }
+  get exitedAtFloor() {
+    return this.#exitedAtFloor;
   }
 
   board(now = Date.now()) {
@@ -180,30 +213,38 @@ export class Passenger {
   //  - Se sono al mio piano e si apre: tutto bene, nessun dubbio.
   //  - Se non posso proprio diventare dubbioso (canBeStranded=false): non
   //    reagisco a nient'altro, punto.
-  //  - Se ero già in dubbio: prima di tutto verifico se ho appena superato
-  //    la soglia di pazienza (solo se canBeExasperated) — se sì,
-  //    l'esasperazione si fissa qui, PRIMA di considerare qualunque
-  //    rassicurazione. Poi (indipendentemente) valuto se rassicurarmi: mi
-  //    rassicuro solo quando l'ascensore si muove davvero verso di me — non
-  //    basta che si sia rimesso in moto in qualunque direzione. La
-  //    rassicurazione scioglie il dubbio corrente, ma NON cancella
-  //    un'esasperazione già raggiunta: un dubbioso può tornare tranquillo
-  //    senza conseguenze (non stava per fare nulla), un esasperato resta
-  //    tale, perché è già commesso alla prima uscita utile (se può farlo).
+  //  - Arrivare ESATTAMENTE al proprio piano e non vedersi aprire le porte
+  //    è la prova più schiacciante possibile — non "l'ascensore è fermo e
+  //    non sono ancora arrivato" (ambiguo: magari sta caricando qualcun
+  //    altro, arriverà), ma "sono proprio qui, e non si apre comunque".
+  //    Per questo salta subito all'esasperazione (se il personaggio può
+  //    esasperarsi), invece di passare per la soglia di pazienza ordinaria
+  //    — vale sia la prima volta che capita, sia se capita più tardi a un
+  //    passeggero già dubbioso per un motivo diverso.
+  //  - Se ero già in dubbio (per l'altro motivo, l'ascensore semplicemente
+  //    fermo altrove): verifico se ho superato la soglia di pazienza
+  //    ordinaria — se sì, l'esasperazione si fissa qui. Poi
+  //    (indipendentemente) valuto se rassicurarmi: mi rassicuro solo
+  //    quando l'ascensore si muove davvero verso di me — non basta che si
+  //    sia rimesso in moto in qualunque direzione. La rassicurazione
+  //    scioglie il dubbio corrente, ma NON cancella un'esasperazione già
+  //    raggiunta: un dubbioso può tornare tranquillo senza conseguenze
+  //    (non stava per fare nulla), un esasperato resta tale, perché è già
+  //    commesso alla prima uscita utile (se può farlo).
   //  - Altrimenti, nasce il dubbio in due casi: l'ascensore è fermo (nessuna
   //    direzione) e io non sono ancora arrivato, oppure è arrivato
-  //    esattamente al mio piano ma non apre.
+  //    esattamente al mio piano ma non apre (quest'ultimo caso, come sopra,
+  //    porta dritto all'esasperazione).
   observe({ floor, direction, canOpenHere }, now = Date.now()) {
     if (this.#to === floor && canOpenHere) return this;
     if (!this.#canBeStranded) return this;
 
+    const arrivedButClosed = this.#to === floor && !canOpenHere;
+
     if (this.isStranded) {
       let next = this;
-      if (
-        this.#canBeExasperated &&
-        !this.isExasperated &&
-        now - this.#strandedSince >= EXASPERATION_THRESHOLD_MS
-      ) {
+      const thresholdCrossed = now - this.#strandedSince >= EXASPERATION_THRESHOLD_MS;
+      if (this.#canBeExasperated && !this.isExasperated && (arrivedButClosed || thresholdCrossed)) {
         next = next.#with({ exasperatedSince: now });
       }
       const movingTowardMe =
@@ -216,8 +257,13 @@ export class Passenger {
     }
 
     const idleWithoutArriving = direction === null && this.#to !== floor;
-    const arrivedButClosed = this.#to === floor && !canOpenHere;
-    return idleWithoutArriving || arrivedButClosed ? this.stranded(now) : this;
+    if (!idleWithoutArriving && !arrivedButClosed) return this;
+
+    let next = this.stranded(now);
+    if (arrivedButClosed && this.#canBeExasperated) {
+      next = next.#with({ exasperatedSince: now });
+    }
+    return next;
   }
 
   // Vero se, esasperato e in grado di uscire di scena, sceglierebbe di
@@ -229,6 +275,45 @@ export class Passenger {
     return this.#to !== floor && this.#canAbandon && this.isExasperated;
   }
 
+  // Appena sceso (arrivo regolare o abbandono, non importa quale): se non
+  // può rientrare, non c'è nulla da conservare — sparisce come sempre
+  // (null segnala al chiamante "niente da tenere"). Se può, resta "fuori,
+  // in attesa" a questo piano: non ancora un passeggero in attesa vero e
+  // proprio (deve prima aspettare che le porte si chiudano — vedi
+  // readyForPickup), e comunque senza aver premuto alcun pulsante.
+  exit(floor, now = Date.now()) {
+    if (!this.#canReenter) return null;
+    return this.#with({ exitedAtFloor: floor, exitedAt: now, boardedAt: null });
+  }
+
+  // Scaduta la finestra di recupero senza che l'ascensore sia tornato,
+  // sparisce per sempre (vale sia mentre è "fuori in attesa" sia dopo,
+  // finché non sale davvero: `exitedAt` resta impostato in entrambi i casi
+  // apposta per continuare a poterlo verificare).
+  hasExpired(now = Date.now()) {
+    return this.#exitedAt !== null && now - this.#exitedAt > REENTRY_WINDOW_MS;
+  }
+
+  // Le porte del ciclo in cui è uscito si sono chiuse: ora è "abile" a
+  // rientrare, cioè diventa un normalissimo passeggero in attesa — proprio
+  // a questo piano, diretto al piano da cui era salito l'ultima volta
+  // (memoria di piano+lato: è entrato lì, quindi torna lì, uscendo stavolta
+  // nel modo consueto, "dal lato opposto"). Il colore non cambia MAI,
+  // qualunque sia la nuova destinazione: non lo tocchiamo qui, `#with` lo
+  // preserva da solo.
+  readyForPickup(now = Date.now()) {
+    return this.#with({
+      from: this.#exitedAtFloor,
+      to: this.#from,
+      exitedAtFloor: null,
+      boardedAt: null,
+      createdAt: now,
+      strandedSince: null,
+      exasperatedSince: null,
+      rescueUsed: false,
+    });
+  }
+
   // Registro di viaggio concluso: la forma piatta che la dashboard
   // analitica in ElevatorSimulator.jsx si aspetta già (from/to/waitTime/
   // totalTripTime/startTime/endTime).
@@ -238,6 +323,7 @@ export class Passenger {
       from: this.#from,
       to: this.#to,
       color: this.#color,
+      canReenter: this.#canReenter,
       startTime: this.#createdAt,
       endTime: now,
       waitTime: (this.#boardedAt ?? now) - this.#createdAt,
@@ -247,11 +333,11 @@ export class Passenger {
 
   // Un abbandono NON è un viaggio completato: è sceso da un piano diverso
   // dalla propria destinazione (esasperato, ha rinunciato — raggiungerà
-  // `to` per le scale, fuori da qualunque cosa la simulazione modelli).
-  // Tenuto separato da toCompletedJourney apposta: mescolarlo alle
-  // statistiche di viaggio (tempo medio, distanza media) le renderebbe
-  // disoneste, attribuendo a un "arrivo" un percorso mai completato in
-  // ascensore.
+  // `to` per le scale, fuori da qualunque cosa la simulazione modelli — a
+  // meno che non rientri più tardi, vedi canReenter). Tenuto separato da
+  // toCompletedJourney apposta: mescolarlo alle statistiche di viaggio
+  // (tempo medio, distanza media) le renderebbe disoneste, attribuendo a un
+  // "arrivo" un percorso mai completato in ascensore.
   toAbandonedJourney(exitedAtFloor, now = Date.now()) {
     return {
       id: this.#id,
@@ -259,6 +345,7 @@ export class Passenger {
       to: this.#to,
       exitedAtFloor,
       color: this.#color,
+      canReenter: this.#canReenter,
       startTime: this.#createdAt,
       endTime: now,
       waitTime: (this.#boardedAt ?? now) - this.#createdAt,
@@ -279,7 +366,10 @@ export class Passenger {
       canBeStranded: this.#canBeStranded,
       canBeExasperated: this.#canBeExasperated,
       canAbandon: this.#canAbandon,
+      canReenter: this.#canReenter,
       type: this.#type,
+      exitedAtFloor: this.#exitedAtFloor,
+      exitedAt: this.#exitedAt,
       ...patch,
     });
   }

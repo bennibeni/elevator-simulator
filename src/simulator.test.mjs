@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createSimulator, simulatorReducer as reduce } from "./simulator.mjs";
-import { Passenger, EXASPERATION_THRESHOLD_MS } from "./Passenger.mjs";
+import { Passenger, EXASPERATION_THRESHOLD_MS, REENTRY_WINDOW_MS } from "./Passenger.mjs";
 import { Building } from "./Building.mjs";
 
 const request = (state, floor) => reduce(state, { type: "REQUEST", floor });
@@ -210,32 +210,55 @@ test("Elevator: isDeadlocked è vero solo se piena E tutte le destinazioni a bor
   const passengers = [Passenger.create(3, 0), Passenger.create(3, 1), Passenger.create(3, 2)];
   ({ elevator } = elevator.board(passengers)); // piena (3/3), destinazioni 0,1,2
 
-  assert.equal(elevator.isDeadlocked(), false, "nessun piano ancora fuori servizio");
+  assert.equal(elevator.isDeadlocked(5), false, "nessun piano ancora fuori servizio");
 
   elevator = elevator.withFloorOutOfService(0, true).withFloorOutOfService(1, true);
   assert.equal(
-    elevator.isDeadlocked(),
+    elevator.isDeadlocked(5),
     false,
     "il piano 2 resta raggiungibile: non è un deadlock",
   );
 
   elevator = elevator.withFloorOutOfService(2, true);
   assert.equal(
-    elevator.isDeadlocked(),
+    elevator.isDeadlocked(5),
     true,
     "piena e tutte e tre le destinazioni sono ora fuori servizio",
   );
 });
 
-test("Elevator: isDeadlocked è falso se la cabina non è piena, anche con destinazioni tutte fuori servizio", () => {
+// Scoperta grazie a una segnalazione reale: la cabina PUÒ restare bloccata
+// anche senza essere piena, se semplicemente non c'è nessun'altra chiamata
+// pendente da nessuna parte nell'edificio — "c'è ancora posto" non serve a
+// niente se non c'è nessun altro da andare a prendere. isDeadlocked() non
+// richiede più la capienza piena: il vero criterio è "nessuna azione
+// disponibile ovunque", che la capienza non determina da sola.
+test("Elevator: isDeadlocked è vero ANCHE a cabina non piena, se non c'è alcun'altra chiamata pendente da nessuna parte", () => {
   let elevator = createSimulator(5).building.elevators[0];
-  const passengers = [Passenger.create(3, 0)];
+  const passengers = [Passenger.create(3, 1), Passenger.create(3, 1)]; // 2/3, stessa destinazione
   ({ elevator } = elevator.board(passengers));
-  elevator = elevator.withFloorOutOfService(0, true);
+  elevator = elevator.withFloorOutOfService(0, true).withFloorOutOfService(1, true);
+  elevator = elevator.decideDirection(5); // nessuna destinazione valida: direction resta null
+
   assert.equal(
-    elevator.isDeadlocked(),
+    elevator.isDeadlocked(5),
+    true,
+    "non è piena, ma non c'è comunque nulla da fare: è bloccata lo stesso",
+  );
+});
+
+test("Elevator: isDeadlocked resta falso a cabina non piena SE esiste un'altra destinazione o chiamata valida", () => {
+  let elevator = createSimulator(5).building.elevators[0];
+  const passengers = [Passenger.create(3, 1)]; // 1/3
+  ({ elevator } = elevator.board(passengers));
+  elevator = elevator.withFloorOutOfService(1, true); // la sua destinazione è OOS...
+  elevator = elevator.requestDestination(4); // ...ma esiste un'altra destinazione valida (es. pulsantiera)
+  elevator = elevator.decideDirection(5);
+
+  assert.equal(
+    elevator.isDeadlocked(5),
     false,
-    "c'è ancora posto: può comunque imbarcare qualcun altro e muoversi",
+    "c'è ancora qualcosa da fare (il piano 4): non è bloccata",
   );
 });
 
@@ -257,7 +280,7 @@ test("Elevator: withEmergencyRequestsIfDeadlocked non fa nulla se nessuno è anc
     .withFloorOutOfService(0, true)
     .withFloorOutOfService(1, true)
     .withFloorOutOfService(2, true);
-  assert.equal(elevator.isDeadlocked(), true);
+  assert.equal(elevator.isDeadlocked(5), true);
 
   const before = elevator;
   elevator = elevator.withEmergencyRequestsIfDeadlocked(5);
@@ -265,7 +288,7 @@ test("Elevator: withEmergencyRequestsIfDeadlocked non fa nulla se nessuno è anc
   assert.equal(elevator.isBroadcastingEmergency, false);
 });
 
-test("Elevator: un passeggero esasperato preme la pulsantiera UN PIANO ALLA VOLTA, non tutti insieme", () => {
+test("Elevator: un passeggero esasperato preme la pulsantiera UN PIANO ALLA VOLTA, e si ferma appena trova un'uscita", () => {
   const t0 = 0;
   let elevator = createSimulator(5).building.elevators[0];
   const passengers = [Passenger.create(3, 0), Passenger.create(3, 1), Passenger.create(3, 2)];
@@ -293,10 +316,13 @@ test("Elevator: un passeggero esasperato preme la pulsantiera UN PIANO ALLA VOLT
 
   elevator = elevator.withEmergencyRequestsIfDeadlocked(5); // piano 3: finalmente in servizio
   assert.equal(elevator.canOpenDoorsAt(3), true, "ora sì: è stato il suo turno");
-  assert.equal(elevator.canOpenDoorsAt(4), false, "il piano 4 tocca ancora dopo");
 
-  elevator = elevator.withEmergencyRequestsIfDeadlocked(5); // piano 4
-  assert.equal(elevator.canOpenDoorsAt(4), true);
+  // trovata un'uscita (il piano 3), la cabina non è più "bloccata": la
+  // sequenza si ferma DA SOLA, senza bisogno di premere anche il piano 4 —
+  // non servirebbe comunque, basta un'unica via d'uscita.
+  elevator = elevator.withEmergencyRequestsIfDeadlocked(5);
+  assert.equal(elevator.isBroadcastingEmergency, false, "risolto: la sequenza si interrompe da sola");
+  assert.equal(elevator.canOpenDoorsAt(4), false, "il piano 4 non serviva più: non viene mai premuto");
 });
 
 test("Elevator: la sequenza di emergenza si interrompe se il deadlock si risolve nel frattempo", () => {
@@ -316,7 +342,7 @@ test("Elevator: la sequenza di emergenza si interrompe se il deadlock si risolve
 
   // il piano 0 torna in servizio: non è più un deadlock totale
   elevator = elevator.withFloorOutOfService(0, false);
-  assert.equal(elevator.isDeadlocked(), false);
+  assert.equal(elevator.isDeadlocked(5), false);
 
   elevator = elevator.withEmergencyRequestsIfDeadlocked(5);
   assert.equal(elevator.isBroadcastingEmergency, false, "la sequenza si interrompe: non serve più");
@@ -356,12 +382,12 @@ test("Elevator: needsOperatorIntervention diventa vero solo se DAVVERO ogni pian
   for (let f = 0; f < 5; f++) elevator = elevator.withFloorOutOfService(f, true);
   elevator = elevator.decideDirection(5).observeCabin(t0);
   elevator = elevator.observeCabin(t0 + EXASPERATION_THRESHOLD_MS + 1);
-  assert.equal(elevator.isDeadlocked(), true);
+  assert.equal(elevator.isDeadlocked(5), true);
 
   for (let i = 0; i < 5; i++) {
     elevator = elevator.withEmergencyRequestsIfDeadlocked(5);
   }
-  assert.equal(elevator.isDeadlocked(), true, "nessun piano valido: resta bloccata");
+  assert.equal(elevator.isDeadlocked(5), true, "nessun piano valido: resta bloccata");
   assert.equal(
     elevator.needsOperatorIntervention(5),
     true,
@@ -767,14 +793,14 @@ test("Elevator: una fermata estranea nella stessa direzione generale rassicura i
   assert.equal(abandoning.length, 1, "esasperato: scende comunque, anche qui");
 });
 
-test("Elevator: un piano fuori servizio per questo ascensore blocca sempre l'apertura", () => {
+test("Elevator: un piano fuori servizio per questo ascensore non apre mai le porte, ma il pulsante in cabina si accende comunque", () => {
   let elevator = createSimulator(5).building.elevators[0];
   elevator = elevator.withFloorOutOfService(3, true);
-  elevator = elevator.requestDestination(3); // no-op: non selezionabile
-  elevator = elevator.requestCall(3); // no-op: non chiamabile
-  assert.equal(elevator.hasDestinationAt(3), false);
-  assert.equal(elevator.hasCallAt(3), false);
-  assert.equal(elevator.canOpenDoorsAt(3), false);
+  elevator = elevator.requestDestination(3); // si accende comunque: un vero pulsante non rifiuta di premersi
+  elevator = elevator.requestCall(3); // diverso discorso: l'origine di una chiamata è nota a chi è lì, resta no-op
+  assert.equal(elevator.hasDestinationAt(3), true, "il pulsante in cabina si accende anche su un piano fuori servizio");
+  assert.equal(elevator.hasCallAt(3), false, "chiamare DA un piano fuori servizio resta impossibile");
+  assert.equal(elevator.canOpenDoorsAt(3), false, "ma le porte lì non si aprono comunque, qualunque cosa sia accesa");
 });
 
 test("Building: sceglie un ascensore idoneo quando un altro non serve quel piano", () => {
@@ -917,7 +943,7 @@ test("Reducer: un deadlock totale si sblocca DA SOLO quando qualcuno diventa esa
     s = reduce(s, { type: "SET_OUT_OF_SERVICE", floor: 3, value: true });
     s = reduce(s, { type: "SET_OUT_OF_SERVICE", floor: 4, value: true });
     while (elevatorOf(s).moving) s = move(s);
-    assert.equal(elevatorOf(s).isDeadlocked(), true);
+    assert.equal(elevatorOf(s).isDeadlocked(5), true);
 
     // NESSUN evento esterno oltre al passare del tempo (OBSERVE_TICK, come
     // farebbe l'app da sola ogni secondo) — nessuna riattivazione di piani
@@ -936,7 +962,7 @@ test("Reducer: un deadlock totale si sblocca DA SOLO quando qualcuno diventa esa
   }
 });
 
-test("Elevator: la sequenza di emergenza non rinuncia mai — ritenta anche dopo un giro completo a vuoto", () => {
+test("Elevator: dopo un unico passaggio completo, un piano riattivato più tardi viene comunque trovato — senza bisogno di ripremere nulla", () => {
   const t0 = 0;
   let elevator = createSimulator(5).building.elevators[0];
   const passengers = [Passenger.create(3, 0), Passenger.create(3, 1), Passenger.create(3, 2)];
@@ -945,20 +971,433 @@ test("Elevator: la sequenza di emergenza non rinuncia mai — ritenta anche dopo
   elevator = elevator.decideDirection(5).observeCabin(t0);
   elevator = elevator.observeCabin(t0 + EXASPERATION_THRESHOLD_MS + 1);
 
-  // un giro completo, tutto no-op (tutti i piani fuori servizio)
+  // un unico passaggio, tutto no-op nel senso di "azionabile" (tutti i
+  // piani fuori servizio) — ma ogni pressione resta comunque registrata
   for (let i = 0; i < 5; i++) elevator = elevator.withEmergencyRequestsIfDeadlocked(5);
+  assert.equal(elevator.isBroadcastingEmergency, true, "il passaggio è concluso, ma la situazione resta bloccata: continua a segnalarlo");
   assert.equal(elevator.needsOperatorIntervention(5), true);
 
-  // un operatore riattiva il piano 2 DOPO il giro a vuoto
+  // il passaggio è ormai completo: richiamare il metodo altre volte non fa nulla
+  const before = elevator;
+  elevator = elevator.withEmergencyRequestsIfDeadlocked(5);
+  assert.equal(elevator, before, "nessun altro piano da premere: il passaggio è già finito");
+
+  // un operatore riattiva il piano 2 DOPO che il passaggio è già concluso
   elevator = elevator.withFloorOutOfService(2, false);
 
-  // la sequenza continua a girare (modulo) e prima o poi ripassa dal piano 2
-  for (let i = 0; i < 5; i++) {
-    elevator = elevator.withEmergencyRequestsIfDeadlocked(5);
-  }
+  // senza bisogno di ripremere nulla: la pressione sul piano 2 era già
+  // stata registrata durante il passaggio, resta lì finché non serve
   assert.equal(
     elevator.canOpenDoorsAt(2),
     true,
-    "il secondo giro trova il piano appena riattivato, non aveva rinunciato per sempre",
+    "il piano 2 era già stato premuto: riattivarlo basta, non serve ripassare",
   );
+});
+
+// canReenter: un passeggero uscito (arrivo o abbandono, non importa quale)
+// può restare "recuperabile" per una finestra di tempo limitata, tornando
+// un normale passeggero in attesa — diretto al piano da cui era salito
+// l'ultima volta — senza mai aver premuto un pulsante.
+
+test("Passenger: exit() non lascia nulla da recuperare se canReenter è falso (default)", () => {
+  const p = Passenger.create(0, 3, 0);
+  assert.equal(p.canReenter, false, "falso di default: comportamento nuovo, non deve cambiare nulla per chi non lo chiede");
+  assert.equal(p.exit(3, 0), null);
+});
+
+test("Passenger: exit() con canReenter=true resta 'in attesa fuori', a parità di identità e colore", () => {
+  const p = Passenger.create(0, 3, 0, { canReenter: true });
+  const originalColor = p.color;
+  const originalId = p.id;
+
+  const lingering = p.exit(3, 1000);
+  assert.notEqual(lingering, null);
+  assert.equal(lingering.isLingering, true);
+  assert.equal(lingering.exitedAtFloor, 3);
+  assert.equal(lingering.color, originalColor, "il colore non cambia mai");
+  assert.equal(lingering.id, originalId, "resta la stessa identità");
+});
+
+test("Passenger: hasExpired diventa vero solo dopo la finestra di recupero", () => {
+  const p = Passenger.create(0, 3, 0, { canReenter: true }).exit(3, 1000);
+  assert.equal(p.hasExpired(1000 + REENTRY_WINDOW_MS), false, "esattamente al limite: non ancora scaduto");
+  assert.equal(p.hasExpired(1000 + REENTRY_WINDOW_MS + 1), true);
+});
+
+test("Passenger: readyForPickup scambia origine/destinazione (torna al piano da cui era salito) senza mai cambiare colore", () => {
+  const p = Passenger.create(0, 3, 0, { canReenter: true });
+  const originalColor = p.color;
+  const originalId = p.id;
+
+  const lingering = p.exit(3, 1000);
+  const readied = lingering.readyForPickup(1500);
+
+  assert.equal(readied.isLingering, false);
+  assert.equal(readied.from, 3, "ora parte dal piano in cui è uscito");
+  assert.equal(readied.to, 0, "diretto al piano da cui era salito l'ultima volta");
+  assert.equal(readied.color, originalColor, "il colore non cambia MAI, nemmeno con una nuova destinazione");
+  assert.equal(readied.id, originalId);
+  assert.equal(readied.isWaiting, true, "di nuovo un normale passeggero in attesa");
+  assert.equal(readied.isStranded, false, "stato di viaggio azzerato per la nuova gamba");
+});
+
+test("Reducer: un passeggero con canReenter resta in attesa fuori dopo essere sceso, senza chiamare l'ascensore", () => {
+  const realDateNow = Date.now;
+  let fakeNow = 0;
+  Date.now = () => fakeNow;
+  try {
+    let state = createSimulator(5);
+    state = reduce(state, { type: "REQUEST_PASSENGER", floor: 0 });
+    // forziamo destinazione 3 e canReenter:true per un test deterministico
+    state = {
+      ...state,
+      building: state.building.withWaiting(
+        state.building.waiting.map(
+          (p) =>
+            new Passenger({
+              id: p.id,
+              from: p.from,
+              to: 3,
+              color: p.color,
+              createdAt: p.startTime,
+              canReenter: true,
+            }),
+        ),
+      ),
+    };
+    const originalColor = state.building.waiting[0].color;
+    const originalId = state.building.waiting[0].id;
+
+    state = service(state); // imbarca al piano 0, parte verso 3
+    while (elevatorOf(state).moving) state = move(state);
+    assert.equal(elevatorOf(state).floor, 3);
+    assert.equal(elevatorOf(state).cabin.doors, "OPENING");
+
+    state = doors(state); // -> OPEN: arriva, diventa "in attesa fuori"
+    assert.equal(state.building.lingering.length, 1);
+    assert.equal(state.building.lingering[0].exitedAtFloor, 3);
+    assert.equal(elevatorOf(state).passengers.length, 0, "è sceso regolarmente");
+    assert.equal(elevatorOf(state).hasCallAt(3), false, "nessun pulsante premuto");
+
+    state = doors(doors(state)); // -> CLOSING -> CLOSED: diventa un normale passeggero in attesa
+    assert.equal(state.building.lingering.length, 0);
+    assert.equal(state.building.waiting.length, 1);
+    const returning = state.building.waiting[0];
+    assert.equal(returning.id, originalId);
+    assert.equal(returning.from, 3);
+    assert.equal(returning.to, 0, "torna al piano da cui era salito");
+    assert.equal(returning.color, originalColor);
+    assert.equal(elevatorOf(state).hasCallAt(3), false, "ancora nessuna chiamata: è solo in attesa passiva");
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
+test("Reducer: il passeggero rientra davvero quando l'ascensore torna al suo piano per un altro motivo", () => {
+  const realDateNow = Date.now;
+  let fakeNow = 0;
+  Date.now = () => fakeNow;
+  try {
+    let state = createSimulator(5);
+    state = reduce(state, { type: "REQUEST_PASSENGER", floor: 0 });
+    state = {
+      ...state,
+      building: state.building.withWaiting(
+        state.building.waiting.map(
+          (p) =>
+            new Passenger({
+              id: p.id,
+              from: p.from,
+              to: 3,
+              color: p.color,
+              createdAt: p.startTime,
+              canReenter: true,
+            }),
+        ),
+      ),
+    };
+    state = service(state);
+    while (elevatorOf(state).moving) state = move(state);
+    state = doors(doors(doors(state))); // scende, poi diventa "in attesa" al piano 3
+
+    // l'ascensore torna al piano 3 per un altro motivo (qui: selezione
+    // diretta dalla pulsantiera, a rappresentare "qualunque altra ragione")
+    state = reduce(state, { type: "REQUEST", floor: 3 });
+    while (elevatorOf(state).moving) state = move(state);
+    assert.equal(elevatorOf(state).floor, 3);
+    fakeNow += 100;
+    state = doors(state); // -> OPEN: qui dovrebbe salire
+
+    assert.equal(elevatorOf(state).passengers.length, 1, "è risalito");
+    assert.equal(elevatorOf(state).passengers[0].to, 0, "diretto di nuovo al piano 0");
+    assert.equal(state.building.waiting.length, 0);
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
+test("Reducer: se l'ascensore non torna in tempo, il passeggero recuperabile scade e sparisce per sempre", () => {
+  const realDateNow = Date.now;
+  let fakeNow = 0;
+  Date.now = () => fakeNow;
+  try {
+    let state = createSimulator(5);
+    state = reduce(state, { type: "REQUEST_PASSENGER", floor: 0 });
+    state = {
+      ...state,
+      building: state.building.withWaiting(
+        state.building.waiting.map(
+          (p) =>
+            new Passenger({
+              id: p.id,
+              from: p.from,
+              to: 3,
+              color: p.color,
+              createdAt: p.startTime,
+              canReenter: true,
+            }),
+        ),
+      ),
+    };
+    state = service(state);
+    while (elevatorOf(state).moving) state = move(state);
+    state = doors(doors(doors(state)));
+    assert.equal(state.building.waiting.length, 1);
+
+    fakeNow += REENTRY_WINDOW_MS + 1000; // la finestra scade, l'ascensore non è tornato
+    state = reduce(state, { type: "OBSERVE_TICK" });
+
+    assert.equal(state.building.waiting.length, 0, "sparito per sempre: la finestra è scaduta");
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
+test("Reducer: un passeggero senza canReenter sparisce come sempre, nessuna coda residua", () => {
+  let state = createSimulator(5);
+  state = reduce(state, { type: "REQUEST_PASSENGER", floor: 0 });
+  state = {
+    ...state,
+    building: state.building.withWaiting(
+      state.building.waiting.map(
+        (p) => new Passenger({ id: p.id, from: p.from, to: 3, color: p.color, createdAt: p.startTime }),
+      ),
+    ),
+  };
+  state = service(state);
+  while (elevatorOf(state).moving) state = move(state);
+  state = doors(doors(doors(state)));
+
+  assert.equal(state.building.lingering.length, 0);
+  assert.equal(state.building.waiting.length, 0);
+  assert.equal(state.completedJourneys.length, 1);
+});
+
+test("Reducer: la finestra di recupero può scadere anche mentre è ancora 'in attesa fuori' (prima che le porte si chiudano) — anche lì va ripulito", () => {
+  const realDateNow = Date.now;
+  let fakeNow = 0;
+  Date.now = () => fakeNow;
+  try {
+    let state = createSimulator(5);
+    state = reduce(state, { type: "REQUEST_PASSENGER", floor: 0 });
+    state = {
+      ...state,
+      building: state.building.withWaiting(
+        state.building.waiting.map(
+          (p) =>
+            new Passenger({
+              id: p.id,
+              from: p.from,
+              to: 3,
+              color: p.color,
+              createdAt: p.startTime,
+              canReenter: true,
+            }),
+        ),
+      ),
+    };
+    state = service(state);
+    while (elevatorOf(state).moving) state = move(state);
+    state = doors(state); // -> OPEN: diventa "in attesa fuori" (lingering)
+    assert.equal(state.building.lingering.length, 1);
+
+    // la finestra scade PRIMA che le porte facciano in tempo a chiudersi
+    fakeNow += REENTRY_WINDOW_MS + 1000;
+    state = reduce(state, { type: "OBSERVE_TICK" });
+
+    assert.equal(state.building.lingering.length, 0, "ripulito anche da 'in attesa fuori', non solo da 'in attesa'");
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
+test("Reducer: replica esatta del bug segnalato — 2/3 passeggeri esasperati, stesso piano OOS, nessun altro traffico: ora si sblocca", () => {
+  const realDateNow = Date.now;
+  let fakeNow = 0;
+  Date.now = () => fakeNow;
+  try {
+    let s = createSimulator(5);
+    // 2 passeggeri (non 3: cabina NON piena), entrambi diretti al piano 1
+    s = reduce(s, { type: "REQUEST_PASSENGER", floor: 2 });
+    s = reduce(s, { type: "REQUEST_PASSENGER", floor: 2 });
+    s = {
+      ...s,
+      building: s.building.withWaiting(
+        s.building.waiting.map(
+          (p) => new Passenger({ id: p.id, from: p.from, to: 1, color: p.color, createdAt: p.startTime }),
+        ),
+      ),
+    };
+    s = move(move(s)); // arriva al piano 2 (partiva da 0)
+    s = doors(doors(doors(s))); // imbarca al piano 2
+    // per riprodurre esattamente "bloccati al piano 2", forziamo la posizione lì
+    // (il boarding può averli già spostati verso 1: li fermiamo con OOS prima che arrivino)
+    s = reduce(s, { type: "SET_OUT_OF_SERVICE", floor: 1, value: true });
+    s = reduce(s, { type: "SET_OUT_OF_SERVICE", floor: 0, value: true });
+    while (elevatorOf(s).moving) s = move(s);
+
+    assert.equal(elevatorOf(s).passengers.length, 2, "2 su 3: cabina NON piena");
+    assert.equal(elevatorOf(s).isFull, false);
+
+    // il tempo passa abbastanza da esasperare entrambi
+    fakeNow += EXASPERATION_THRESHOLD_MS + 1000;
+    s = reduce(s, { type: "OBSERVE_TICK" });
+    assert.equal(elevatorOf(s).passengers.every((p) => p.isExasperated), true);
+
+    // prima della correzione: isDeadlocked() era falso (non piena), quindi
+    // né il banner né la valvola di emergenza scattavano mai
+    assert.equal(elevatorOf(s).isDeadlocked(5), true, "bloccata comunque: nessun'altra chiamata pendente");
+
+    // lasciamo scorrere il tempo: la valvola di emergenza deve sbloccarla da sola
+    for (let i = 0; i < 10 && elevatorOf(s).passengers.length > 0; i++) {
+      fakeNow += 1000;
+      s = reduce(s, { type: "OBSERVE_TICK" });
+      while (elevatorOf(s).moving) s = move(s);
+      if (elevatorOf(s).cabin.doors !== "CLOSED") s = doors(doors(doors(s)));
+    }
+
+    assert.equal(elevatorOf(s).passengers.length, 0, "entrambi scesi, senza alcun intervento esterno");
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
+test("Reducer: cabina piena non insegue più chiamate che non può servire — niente oscillazione infinita tra due piani", () => {
+  // Bug reale: 3 passeggeri a bordo (cabina piena), destinazioni tutte
+  // fuori servizio, ma chiamate ESTERNE valide ai piani 0 e 1 (non fuori
+  // servizio, semplicemente non imbarcabili perché piena). Prima della
+  // correzione, l'ascensore oscillava tra 0 e 1 all'infinito, inseguendo
+  // chiamate che non poteva mai servire — sembrava occupato ma non lo era
+  // mai davvero, e i passeggeri non diventavano mai dubbiosi (l'ascensore
+  // non era mai né fermo né arrivato al loro piano).
+  const realDateNow = Date.now;
+  let fakeNow = 0;
+  Date.now = () => fakeNow;
+  try {
+    let s = createSimulator(5);
+    s = reduce(s, { type: "REQUEST_PASSENGER", floor: 0 });
+    s = reduce(s, { type: "REQUEST_PASSENGER", floor: 0 });
+    s = reduce(s, { type: "REQUEST_PASSENGER", floor: 0 });
+    let dest = 2;
+    s = {
+      ...s,
+      building: s.building.withWaiting(
+        s.building.waiting.map(
+          (p) => new Passenger({ id: p.id, from: p.from, to: dest++, color: p.color, createdAt: p.startTime }),
+        ),
+      ),
+    };
+    s = doors(doors(doors(s))); // imbarco al piano 0: cabina piena (3/3)
+
+    s = reduce(s, { type: "SET_OUT_OF_SERVICE", floor: 2, value: true });
+    s = reduce(s, { type: "SET_OUT_OF_SERVICE", floor: 3, value: true });
+    s = reduce(s, { type: "SET_OUT_OF_SERVICE", floor: 4, value: true });
+
+    // chiamate esterne valide ai piani 0 e 1, presenti PRIMA che l'ascensore
+    // vada mai in idle — questo è ciò che innescava l'oscillazione infinita
+    s = reduce(s, { type: "REQUEST_PASSENGER", floor: 1 });
+    s = reduce(s, { type: "REQUEST_PASSENGER", floor: 0 });
+
+    let distinctFloorsVisited = new Set();
+    for (let i = 0; i < 40 && elevatorOf(s).passengers.length > 0; i++) {
+      fakeNow += 400;
+      s = reduce(s, { type: "OBSERVE_TICK" });
+      const e = elevatorOf(s);
+      if (e.moving) s = move(s);
+      distinctFloorsVisited.add(elevatorOf(s).floor);
+      if (elevatorOf(s).cabin.doors !== "CLOSED") s = doors(doors(doors(s)));
+    }
+
+    assert.equal(
+      elevatorOf(s).passengers.length,
+      0,
+      "tutti scesi: la valvola di emergenza si attiva, non resta bloccata a oscillare",
+    );
+  } finally {
+    Date.now = realDateNow;
+  }
+});
+
+test("Elevator: decideDirection ignora una chiamata a cabina piena (non azionabile), ma non una destinazione", () => {
+  let elevator = createSimulator(5).building.elevators[0];
+  const passengers = [Passenger.create(0, 2), Passenger.create(0, 2), Passenger.create(0, 2)];
+  ({ elevator } = elevator.board(passengers)); // piena, destinazione unica: piano 2
+  elevator = elevator.withFloorOutOfService(2, true); // unica destinazione fuori servizio
+  elevator = elevator.requestCall(4); // chiamata esterna valida, ma piena: non imbarcabile
+
+  elevator = elevator.decideDirection(5);
+  assert.equal(
+    elevator.direction,
+    null,
+    "la chiamata al piano 4 non è azionabile (piena): non deve attirare l'ascensore",
+  );
+
+  // la STESSA situazione, ma questa volta il piano 4 è una destinazione
+  // (qualcuno a bordo l'ha selezionato), non solo una chiamata: quella sì
+  // che conta, piena o no
+  elevator = elevator.requestDestination(4);
+  elevator = elevator.decideDirection(5);
+  assert.equal(elevator.direction, "UP", "una destinazione conta sempre, indipendentemente dalla capienza");
+});
+
+// Gravità differenziata: arrivare ESATTAMENTE al proprio piano senza
+// vedersi aprire le porte è una prova inequivocabile — porta dritto
+// all'esasperazione, senza aspettare la soglia di pazienza ordinaria (che
+// resta invece per "l'ascensore è fermo qui, e qui non è il mio piano").
+
+test("Passenger: arrivare al proprio piano senza apertura esaspera IMMEDIATAMENTE, senza aspettare la soglia", () => {
+  let p = Passenger.create(0, 3, 0);
+  p = p.observe({ floor: 3, direction: null, canOpenHere: false }, 100); // arrivato esattamente qui, chiuso
+  assert.equal(p.isStranded, true);
+  assert.equal(p.isExasperated, true, "immediato: non serve aspettare EXASPERATION_THRESHOLD_MS");
+});
+
+test("Passenger: l'ascensore fermo altrove (non al mio piano) mantiene la soglia di pazienza ordinaria", () => {
+  let p = Passenger.create(0, 3, 0);
+  p = p.observe({ floor: 1, direction: null, canOpenHere: false }, 100); // fermo, ma non è il mio piano
+  assert.equal(p.isStranded, true);
+  assert.equal(p.isExasperated, false, "ambiguo: potrebbe ancora arrivare, niente di schiacciante");
+
+  p = p.observe({ floor: 1, direction: null, canOpenHere: false }, 100 + EXASPERATION_THRESHOLD_MS - 1);
+  assert.equal(p.isExasperated, false, "un istante prima della soglia: ancora no");
+
+  p = p.observe({ floor: 1, direction: null, canOpenHere: false }, 100 + EXASPERATION_THRESHOLD_MS);
+  assert.equal(p.isExasperated, true, "soglia raggiunta: ora sì");
+});
+
+test("Passenger: un dubbioso per l'altro motivo che POI arriva al proprio piano chiuso esaspera subito, anche prima della soglia", () => {
+  let p = Passenger.create(0, 3, 0);
+  p = p.observe({ floor: 1, direction: null, canOpenHere: false }, 0); // dubbioso per motivo ambiguo
+  assert.equal(p.isExasperated, false);
+
+  // molto prima della soglia ordinaria, ma l'ascensore arriva ESATTAMENTE al suo piano, chiuso
+  p = p.observe({ floor: 3, direction: null, canOpenHere: false }, 500);
+  assert.equal(p.isExasperated, true, "prova schiacciante: scavalca la soglia ordinaria");
+});
+
+test("Passenger: con canBeExasperated=false, anche l'arrivo al proprio piano chiuso non esaspera mai", () => {
+  let p = Passenger.create(0, 3, 0, { canBeExasperated: false });
+  p = p.observe({ floor: 3, direction: null, canOpenHere: false }, 100);
+  assert.equal(p.isStranded, true);
+  assert.equal(p.isExasperated, false, "il limite del personaggio vale comunque, indipendentemente da quanto è schiacciante la prova");
 });
